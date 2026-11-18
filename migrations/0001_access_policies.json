@@ -1,0 +1,12 @@
+[
+  { "table": "users", "principal": "anonymous", "actions": ["select", "insert", "update", "delete"], "template": "public" },
+  { "table": "sessions", "principal": "anonymous", "actions": ["select", "insert", "update", "delete"], "template": "public" },
+  { "table": "plans", "principal": "anonymous", "actions": ["select", "insert", "update", "delete"], "template": "public" },
+  { "table": "keys", "principal": "anonymous", "actions": ["select", "insert", "update", "delete"], "template": "public" },
+  { "table": "memberships", "principal": "anonymous", "actions": ["select", "insert", "update", "delete"], "template": "public" },
+  { "table": "videos", "principal": "anonymous", "actions": ["select", "insert", "update", "delete"], "template": "public" },
+  { "table": "requests", "principal": "anonymous", "actions": ["select", "insert", "update", "delete"], "template": "public" },
+  { "table": "watch_logs", "principal": "anonymous", "actions": ["select", "insert", "update"], "template": "public" },
+  { "table": "settings", "principal": "anonymous", "actions": ["select", "insert", "update"], "template": "public" },
+  { "table": "audit", "principal": "anonymous", "actions": ["select", "insert"], "template": "public" }
+]

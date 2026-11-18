@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="格斗影库">
+  <rect width="64" height="64" rx="14" fill="#171311" />
+  <path d="M20 15h24a5 5 0 0 1 5 5v24a5 5 0 0 1-5 5H20a5 5 0 0 1-5-5V20a5 5 0 0 1 5-5Z" fill="none" stroke="#dfc499" stroke-width="3" />
+  <path d="M27 25l13 7-13 7Z" fill="#dfc499" />
+  <circle cx="32" cy="15" r="4" fill="#171311" stroke="#dfc499" stroke-width="3" />
+</svg>
