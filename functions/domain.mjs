@@ -1,3 +1,4 @@
+import { CARD_SOURCE } from './entitlement.mjs';
 import { signFields, verifyFields, shortId } from './shared/tokens.mjs';
 import { expiresAt } from './shared/util.mjs';
 
@@ -58,12 +59,19 @@ function stampField(value) {
 
 // Rows that decide who may watch what are signed with a runtime-only key: a row
 // written straight into the table without a valid signature grants nothing.
+function signedMembership(row) {
+  const fields = [row.user_id, row.plan_id, row.tier_rank, stampField(row.expires_at), row.key_id ?? 'none'];
+  return row.source === CARD_SOURCE
+    ? ['membership-credit-v1', [...fields, row.id, stampField(row.starts_at)]]
+    : ['membership', fields];
+}
+
 export function membershipSignature(secret, row) {
-  return signFields(secret, 'membership', [row.user_id, row.plan_id, row.tier_rank, stampField(row.expires_at), row.key_id ?? 'none']);
+  return signFields(secret, ...signedMembership(row));
 }
 
 export function membershipIsAuthentic(secret, row) {
-  return verifyFields(secret, 'membership', [row.user_id, row.plan_id, row.tier_rank, stampField(row.expires_at), row.key_id ?? 'none'], row.signature);
+  return verifyFields(secret, ...signedMembership(row), row.signature);
 }
 
 export function planSignature(secret, row) {
