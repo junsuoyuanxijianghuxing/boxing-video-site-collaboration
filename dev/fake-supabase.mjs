@@ -64,6 +64,8 @@ function compareValues(actual, operator, raw) {
 }
 
 function compileOrClause(clause) {
+  const contains = /^([a-z_][a-z0-9_]*)\.ilike\.\*([\p{L}\p{N}@+ -]+)\*$/u.exec(clause);
+  if (contains) return row => String(row[contains[1]] ?? '').toLowerCase().includes(contains[2].toLowerCase());
   const nested = /^(and|or)\((.*)\)$/is.exec(clause);
   if (nested) {
     const tests = splitTopLevel(nested[2]).map(compileOrClause);
