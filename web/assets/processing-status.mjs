@@ -217,8 +217,10 @@ export function mountProcessingStatus(host, { onPickCover, onGoLibrary, confirma
     }
   }
 
+  const pane = host.closest('#admin-upload-pane');
+  const paused = () => document.visibilityState === 'hidden' || Boolean(pane?.hidden);
   async function load() {
-    if (!live() || document.visibilityState === 'hidden') return;
+    if (!live() || paused()) return;
     const version = ++sequence;
     clearTimeout(poll); clearTimeout(timeout); controller?.abort();
     const readController = new AbortController(); controller = readController;
@@ -249,12 +251,13 @@ export function mountProcessingStatus(host, { onPickCover, onGoLibrary, confirma
   }
 
   const visible = () => {
-    if (document.visibilityState === 'hidden') { ++sequence; clearTimeout(poll); clearTimeout(timeout); controller?.abort(); }
+    if (paused()) { ++sequence; clearTimeout(poll); clearTimeout(timeout); controller?.abort(); }
     else void load();
   };
   const changed = () => { if (live()) void load(); };
   document.addEventListener('boxvault-uploaded', changed);
   document.addEventListener('visibilitychange', visible);
+  pane?.addEventListener('upload-pane-shown', visible);
   const observer = new MutationObserver(() => { if (!host.isConnected) dispose(); });
   observer.observe(document.body, { childList: true, subtree: true });
   function dispose() {
@@ -262,6 +265,7 @@ export function mountProcessingStatus(host, { onPickCover, onGoLibrary, confirma
     dead = true; ++sequence; controller?.abort(); clearTimeout(poll); clearTimeout(timeout); observer.disconnect();
     for (const entry of requests.values()) entry.controller?.abort();
     requests.clear();
+    pane?.removeEventListener('upload-pane-shown', visible);
     document.removeEventListener('boxvault-uploaded', changed); document.removeEventListener('visibilitychange', visible);
   }
   void load(); return dispose;
