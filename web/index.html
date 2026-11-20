@@ -3322,6 +3322,73 @@ body:has(.liquid-library) {
   }
 }
 /* End Catalog Toolbar Refinement 20261025. */
+
+.library-quick-filters {
+  display: flex; flex-wrap: wrap; gap: 12px 18px; align-items: end;
+  padding: 12px 0 18px; border-bottom: 1px solid var(--rule);
+}
+.library-quick-filters label, .member-filters .field, .member-contact .field, .member-grant .field {
+  display: grid; gap: 6px; min-width: 0; color: var(--muted); font-size: .875rem;
+}
+.library-quick-filters .input { width: auto; min-width: 9.5rem; min-height: 44px; font-size: 1rem; }
+.admin-task-nav { display: flex; flex-wrap: wrap; gap: 16px 28px; padding-block: 12px; border-block: 1px solid var(--rule); }
+.admin-task-group { display: grid; align-content: start; gap: 6px; }
+.admin-task-group > span { color: var(--muted); font-size: .8rem; }
+.admin-task-group > div, .member-actions, .member-pager, .member-filter-actions, .admin-pair-tools {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+}
+.admin-task-group a { display: inline-flex; align-items: center; min-height: 40px; padding: 6px 10px; border-radius: 7px; color: var(--ink); font-size: .94rem; text-decoration: none; }
+.admin-task-group a:hover, .admin-task-group a:focus-visible { background: var(--paper-2); }
+.admin-task-group a[aria-current="page"] { color: var(--paper); background: var(--accent); font-weight: 700; }
+.admin-pair-tools { margin-block: 12px; }
+.admin-pair-tools:has(> button[hidden]):has(> span:empty) { display: none; }
+#admin-pair[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.admin-panes, #admin-upload-pane { display: grid; gap: 14px; min-width: 0; align-items: start; }
+.admin-panes > *, #admin-upload-pane > *, .member-directory, .member-card, .member-list { min-width: 0; }
+.admin-panes.is-paired #admin-upload-pane .admin-cols { grid-template-columns: minmax(0, 1fr); }
+.member-filters { display: grid; grid-template-columns: repeat(3, minmax(100px, 1fr)); gap: 10px 14px; align-items: end; }
+.member-filters .member-lookup { grid-column: 1 / -1; }
+.member-filters .input, .member-contact .input { min-width: 0; min-height: 44px; font-size: 1rem; }
+.member-filter-actions { grid-column: 1 / -1; }
+.member-list { display: grid; gap: 10px; }
+.member-card { padding: 14px 16px; border: 1px solid var(--rule-2); border-radius: 10px; background: var(--paper-2); overflow-wrap: anywhere; }
+.member-card header { display: flex; justify-content: space-between; align-items: start; flex-wrap: wrap; gap: 8px 16px; }
+.member-card header strong { font-size: 1.05rem; }
+.member-email, .member-note, .member-dates { color: var(--muted); font-size: .875rem; line-height: 1.5; }
+.member-number { color: var(--muted); font: .8rem var(--mono, monospace); }
+.member-badges { display: flex; flex-wrap: wrap; gap: 5px; }
+.member-card p { margin-block: 5px; }
+.member-actions { margin-top: 9px; align-items: end; }
+.member-actions .btn, .member-contact .btn, .member-filter-actions .btn, #admin-pair, .member-pager .btn { min-height: 40px; font-size: .875rem; }
+.member-details { margin-top: 12px; border-top: 1px solid var(--rule); }
+.member-details > summary { cursor: pointer; padding: 10px 0 3px; font-size: .94rem; }
+.member-grant, .member-contact, .member-account-actions { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--rule); }
+.member-grant .field { width: 7.5rem; }
+.member-contact { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) auto; gap: 8px; align-items: end; }
+.member-pager { justify-content: flex-end; font-size: .9rem; }
+@media (min-width: 1060px) {
+  .admin-panes.is-paired { grid-template-columns: minmax(0, 1.12fr) minmax(0, 1fr); }
+  .admin-panes.is-paired[data-primary="upload"] { grid-template-columns: minmax(0, 1fr) minmax(0, 1.12fr); }
+}
+@media (max-width: 640px) {
+  .library-quick-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .library-quick-filters .input { width: 100%; min-width: 0; padding-inline: 8px; }
+  .library-quick-filters label:nth-last-child(2):not([hidden]), .library-quick-filters label:last-child { grid-column: 1 / -1; }
+  .admin-task-nav { display: grid; gap: 8px; }
+  .admin-task-group { grid-template-columns: 5em minmax(0, 1fr); align-items: baseline; }
+  .admin-task-group > div { gap: 2px; }
+  .admin-task-group a { padding: 4px 7px; }
+  .member-card { padding: 12px; }
+  .member-filters, .member-contact { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .member-contact .field:first-child { grid-column: 1 / -1; }
+  .member-filter-actions { grid-column: auto; }
+  .admin-panes.is-paired[data-primary="upload"] #admin-upload-pane { order: -1; }
+}
+.member-editor { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); align-items: end; gap: 9px 12px; margin: 14px 0; padding: 14px; border: 1px solid var(--rule-2); border-radius: 8px; background: var(--paper); }
+.member-editor .input { min-width: 0; width: 100%; min-height: 44px; }
+.member-editor .member-actions, .member-editor p { grid-column: 1 / -1; }
+.member-editor [data-editor-status]:empty { display: none; }
+#admin-upload-pane[hidden], #tab-body[hidden], .member-editor[hidden], .member-editor [hidden] { display: none; }
 </style>
     <script data-inline="assets/frame-guard.js">// nginx 这一层已经用响应头发了 frame-ancestors 'none'；<meta> CSP 表达不了这条指令
 // （浏览器会直接忽略并报警），所以这里留一层自己的兜底：被别的页面套进框架时抢回顶层窗口，
