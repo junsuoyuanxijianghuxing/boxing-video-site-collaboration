@@ -1,9 +1,11 @@
 import { store } from './store.mjs';
 import { DataError } from './db.mjs';
+import { accountDirectory } from './account-directory.mjs';
 import { readCookie, acceptsMutation, appendCookie } from './shared/cookies.mjs';
 import { ipPrefix, csrfToken } from './shared/tokens.mjs';
 import { isUuid, expiresAt } from './shared/util.mjs';
-import { effectiveRank, lapsedEnd, decideAccess, normalizeSettings, yuanText } from './domain.mjs';
+import { entitlement, setAccountEntitlement } from './entitlement.mjs';
+import { decideAccess, normalizeSettings, yuanText } from './domain.mjs';
 import * as accounts from './accounts.mjs';
 import * as purchasing from './purchasing.mjs';
 import * as catalog from './catalog.mjs';
@@ -15,10 +17,6 @@ import { MIGRATION_TOKEN } from './migration-token.mjs';
 
 const MAX_BODY_BYTES = 64 * 1024;
 const PUBLIC_SETTINGS_KEYS = ['brand', 'brand_line', 'watermark_prefix', 'contact_qq', 'purchase_steps', 'promo_line', 'default_preview_seconds', 'max_active_sessions'];
-
-// How far the account search looks. It is reported to the page, so a miss can say
-// "not found among the most recent N" instead of pretending to be exhaustive.
-const ACCOUNT_SEARCH_SCAN = 500;
 
 function json(body, status = 200, headers = {}) {
   return Response.json(body, { status, headers: { 'cache-control': 'no-store', ...headers } });
@@ -153,11 +151,12 @@ const ROUTES = {
   'admin-key-restore': { method: 'POST', auth: 'admin', run: (ctx, input) => purchasing.restoreKey(ctx, input.id) },
   'admin-trash-counts': { method: 'GET', auth: 'admin', run: (ctx) => ctx.adminTrashCounts() },
   'admin-members': { method: 'GET', auth: 'admin', run: (ctx, input) => ctx.adminMembers(input) },
-  'admin-accounts': { method: 'GET', auth: 'admin', run: (ctx, input) => ctx.adminAccounts(input) },
+  'admin-accounts': { method: 'GET', auth: 'admin', run: (ctx, input) => accountDirectory(ctx, input) },
   'admin-user-reset-password': { method: 'POST', auth: 'admin', run: (ctx, input) => accounts.resetPasswordByAdmin(ctx, input) },
   'admin-admins': { method: 'GET', auth: 'admin', run: (ctx) => accounts.adminList(ctx) },
   'admin-admin-grant': { method: 'POST', auth: 'admin', run: (ctx, input) => accounts.grantAdmin(ctx, input) },
   'admin-admin-revoke': { method: 'POST', auth: 'admin', run: (ctx, input) => accounts.revokeAdmin(ctx, input) },
+  'admin-account-entitlement': { method: 'POST', auth: 'admin', run: setAccountEntitlement },
   'admin-member-revoke': { method: 'POST', auth: 'admin', run: (ctx, input) => ctx.adminRevokeMembership(input.id) },
   'admin-member-restore': { method: 'POST', auth: 'admin', run: (ctx, input) => ctx.adminRestoreMembership(input.id) },
   'admin-member-adjust-days': { method: 'POST', auth: 'admin', run: (ctx, input) => purchasing.adjustMembershipDays(ctx, { id: input.id, days: input.days }) },
@@ -215,6 +214,7 @@ const POST_FIELDS = {
   'admin-user-reset-password': ['userId', 'newPassword'],
   'admin-admin-grant': ['email'],
   'admin-admin-revoke': ['email'],
+  'admin-account-entitlement': ['userId', 'rank', 'mode', 'days', 'until', 'revision'],
   'admin-member-revoke': ['id'],
   'admin-member-restore': ['id'],
   'admin-member-adjust-days': ['id', 'days'],
@@ -248,6 +248,7 @@ export function createHandler(deps) {
   // 实际一个字节都没变（同一族的"改了没用"这个站已经犯过几次）。
   // 缓存在一次开片里必然已经更新：播放器取分段之前一定先打过 a=play（那是一条非 media 请求）。
   let liveSettings = normalizeSettings(null);
+  const mergeEpochs = new WeakMap();
 
   return async function handle({ request, supabase }) {
     const url = new URL(request.url);
@@ -317,9 +318,15 @@ export function createHandler(deps) {
       }
 
       if (viewer) {
-        const memberships = await clientStore.listMemberships(viewer.user.id);
+        if (!mergeEpochs.has(supabase)) {
+          mergeEpochs.set(supabase, clientStore.membershipEpoch().catch(error => { mergeEpochs.delete(supabase); throw error; }));
+        }
+        const [epoch, memberships, overrides] = await Promise.all([mergeEpochs.get(supabase), clientStore.listMemberships(viewer.user.id),
+          clientStore.entitlementOverrides([viewer.user.id])]);
+        ctx.mergeEpoch = epoch;
+        ctx.standing = entitlement(memberships, epoch, overrides.get(viewer.user.id));
         ctx.memberships = memberships;
-        ctx.rank = effectiveRank(memberships).rank;
+        ctx.rank = ctx.standing.rank;
         await accounts.touchSession(ctx, viewer);
       }
 
@@ -363,8 +370,8 @@ export function createHandler(deps) {
         viewer: viewer ? accounts.publicUser(viewer.user) : null,
         privileged: ctx.privileged,
         rank: ctx.rank,
-        membershipUntil: viewer ? effectiveRank(ctx.memberships ?? []).until : null,
-        membershipLapsedAt: viewer ? lapsedEnd(ctx.memberships ?? []) : null,
+        membershipUntil: ctx.standing?.until ?? null,
+        membershipLapsedAt: ctx.standing?.lapsedAt ?? null,
         csrf: viewer?.csrf ?? readCookie(request, 'lvs_csrf') ?? null,
         sessionEnded: viewer ? null : ctx.viewerLost ?? null,
         // A logged-in non-admin gets a masked hint of who the owner is: that is the one
@@ -405,6 +412,7 @@ export function createHandler(deps) {
           user: accounts.publicUser(viewer.user),
           rank: ctx.rank,
           privileged: ctx.privileged,
+          membership: ctx.standing,
           memberships: rows.map((row) => ({
             id: row.id,
             plan: plans.get(row.plan_id)?.name ?? '未知档位',
@@ -487,95 +495,18 @@ export function createHandler(deps) {
         };
       };
 
-      // Every registered account, member or not: the seller answers "我买过、登不上去"
-      // before anyone has bound a code, so the member list alone is not enough.
-      ctx.adminAccounts = async (input = {}) => {
-        const needle = String(input.q ?? '').trim().toLowerCase();
-        // A term only takes the exact-match path when it is a whole address. Requiring just
-        // an "@" made a half-typed "buyer@" search for an address nobody could have.
-        const exact = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/.test(needle) ? needle : '';
-        // A partial term is matched in the application over a bounded page, never turned into
-        // a filter string: an email fragment must not become a query operator.
-        const partial = Boolean(needle) && !exact;
-        const page = await clientStore.listUsers({
-          offset: partial ? 0 : input.offset,
-          limit: partial ? ACCOUNT_SEARCH_SCAN : (input.limit ?? 60),
-          emailExact: exact || undefined,
-          // 主表默认不再混显停用的账号（它们进了回收站），回收站反过来只要停用的。
-          disabledOnly: input.disabled === '1' || input.disabled === true,
-          activeOnly: input.disabled === '0' || input.active === '1',
-        });
-        const matched = partial
-          ? page.items.filter((row) => [row.email, row.display_name, row.note, row.contact_qq]
-            .some((field) => String(field ?? '').toLowerCase().includes(needle)))
-          : page.items;
-        // 一个人可能买过好几条授权（续卡、升级、买过又撤销）。名单要按人排，
-        // 所以这里把每一条都挂到那个人下面，而不是只留"最好那条"——只留一条时
-        // 站长看不到他还有第二条可以撤销，撤销按钮也就无处可放。
-        const grants = new Map();
-        for (const row of await clientStore.listMembersWithPlans(400)) {
-          if (!row.user_id) continue;
-          const list = grants.get(row.user_id) ?? [];
-          list.push(row);
-          grants.set(row.user_id, list);
-        }
-        const plans = new Map((await clientStore.listPlans({ includeDisabled: true })).map((row) => [row.id, row]));
-        const grantShape = (row) => ({
-          id: row.id,
-          plan: plans.get(row.plan_id)?.name ?? '未知档位',
-          planCode: plans.get(row.plan_id)?.code ?? '',
-          rank: row.tier_rank,
-          expiresAt: row.expires_at ?? null,
-          source: row.source,
-          createdAt: row.created_at,
-          revokedAt: row.revoked_at ?? null,
-          verified: Boolean(row.verified),
-        });
-        const items = matched.map((user) => {
-          const held = (grants.get(user.id) ?? [])
-            .filter((row) => row.verified && !row.revoked_at)
-            .sort((a, b) => (Date.parse(b.expires_at ?? '') || Number.MAX_SAFE_INTEGER)
-              - (Date.parse(a.expires_at ?? '') || Number.MAX_SAFE_INTEGER));
-          const best = held[0];
-          return {
-            user: accounts.publicUser(user),
-            registeredAt: user.created_at,
-            lastLoginAt: user.last_login_at ?? null,
-            disabledAt: user.disabled_at ?? null,
-            note: user.note ?? '',
-            contactQq: user.contact_qq ?? '',
-            isOwner: ctx.adminEmails.includes(String(user.email).toLowerCase()),
-            membership: best ? {
-              plan: plans.get(best.plan_id)?.name ?? '未知档位',
-              rank: best.tier_rank,
-              expiresAt: best.expires_at ?? null,
-            } : null,
-            // 名单里逐条展开用的；已撤销的不放进来（它们在回收站）。
-            grants: held.map(grantShape),
-            revokedGrants: (grants.get(user.id) ?? []).filter((row) => row.revoked_at).length,
-          };
-        });
-        return {
-          items,
-          hasMore: partial ? false : page.hasMore,
-          nextOffset: page.nextOffset,
-          searchedExact: Boolean(exact),
-          // Saying how far the search actually looked keeps a zero-result screen from reading
-          // as "this person never registered".
-          searchScope: partial ? page.items.length : null,
-          searchScopeCapped: partial ? page.items.length >= ACCOUNT_SEARCH_SCAN : false,
-        };
-      };
-
-      // 回收站里的"重新生效"：只把还在有效期内的撤销恢复回去。
-      // 已经过了到期时间的这条，就算当初没撤销也已经到期了，放回主表只会多一行"已到期"的假希望。
       ctx.adminRestoreMembership = async (id) => {
         if (!isUuid(id)) throw new DataError('membership_not_found');
-        const row = await clientStore.findMembershipById(id);
-        if (!row) throw new DataError('membership_not_found');
+        const { row, override } = await clientStore.editableMembership(id);
         if (!row.revoked_at) throw new DataError('membership_not_revoked');
-        const ends = Date.parse(row.expires_at ?? '');
-        if (row.expires_at && Number.isFinite(ends) && ends <= Date.now()) throw new DataError('membership_already_expired');
+        const now = Date.now();
+        if (row.expires_at && Date.parse(row.expires_at) <= now) {
+          const rows = await clientStore.listMemberships(row.user_id);
+          const before = entitlement(rows, ctx.mergeEpoch, override, now);
+          const revived = rows.map(card => card.id === id ? { ...card, revoked_at: null } : card);
+          const after = entitlement(revived, ctx.mergeEpoch, override, now);
+          if (!after.rank || (before.rank === after.rank && before.until === after.until)) throw new DataError('membership_already_expired');
+        }
         const updated = await clientStore.restoreMembershipById(id);
         if (!updated) throw new DataError('membership_restore_failed');
         await clientStore.audit({ actorId: viewer?.user?.id, action: 'membership_restore', target: id, ipPrefix: ctx.ip });
@@ -583,6 +514,7 @@ export function createHandler(deps) {
       };
       ctx.adminRevokeMembership = async (id) => {
         if (!isUuid(id)) throw new DataError('membership_not_found');
+        await clientStore.editableMembership(id);
         const updated = await clientStore.revokeMembershipById(id);
         if (!updated) throw new DataError('membership_not_found');
         await clientStore.audit({ actorId: viewer?.user?.id, action: 'membership_revoke', target: id, ipPrefix: ctx.ip });
@@ -718,7 +650,7 @@ export function createHandler(deps) {
       };
 
       // 「对象」栏只有 UUID 截断时，这一栏对站长没有信息量：他要读的是"动了谁的哪一条"。
-      const AUDIT_USER_TARGET = new Set(['user_disable', 'user_enable', 'user_note', 'user_password_reset', 'login_fail']);
+      const AUDIT_USER_TARGET = new Set(['account_entitlement', 'user_disable', 'user_enable', 'user_note', 'user_password_reset', 'login_fail']);
       const AUDIT_MEMBER_TARGET = new Set(['membership_revoke', 'membership_adjust', 'membership_restore']);
       const AUDIT_KEY_TARGET = new Set(['key_revoke', 'key_restore']);
       // 播放闸门与设备上报这几类的 target 也是片 id：不进这张表，日志里那一栏就只剩「编号 1a2b3c4d」，
@@ -859,7 +791,8 @@ function statusFor(code) {
   if (code === 'lesson_series_tampered') return 503;
   if (code === 'lesson_series_limit_exceeded') return 422;
   if (code === 'lesson_series_not_found') return 404;
-  if (code === 'catalog_order_conflict') return 409;
+  if (code === 'entitlement_invalid') return 503;
+  if (code === 'membership_conflict' || code === 'catalog_order_conflict') return 409;
   if (code === 'catalog_order_tampered') return 503;
   if (code === 'catalog_order_limit_exceeded') return 422;
   // A failed verification is a refusal, not a lost reply: the row was definitely not marked
