@@ -9,6 +9,7 @@ import { mountProcessingStatus } from './processing-status.mjs';
 import { mountServerCoverPicker } from './cover-picker.mjs';
 import { copyText } from './clipboard.mjs';
 import { mountAdminWorkspace } from './admin-workspace.mjs';
+import { directoryMarkup, bindEntitlementEditor } from './member-directory.mjs';
 
 // A phone browser that lacks WebCrypto fails inside the encryptor with a JS TypeError like
 // "Cannot read properties of undefined (reading 'importKey')". That string is true but
@@ -236,76 +237,147 @@ export async function mountAdmin(view, { reloadBoot }) {
   // The tab lives in the URL hash so a refresh, a bookmark or a "看激活码页" link
   // from the owner's own notes lands back on the panel they were working in.
   const tabKeys = new Set(TABS.map(([key]) => key));
-  let current = tabKeys.has(location.hash.slice(1)) ? location.hash.slice(1) : 'upload';
+  let current = tabKeys.has(location.hash.slice(1)) ? location.hash.slice(1) : 'members';
   let keysPage = 0;
   let keysFilter = '';
   const keyExport = { filter: '', nextOffset: 0, pending: false, paint: () => {} };
   const videoPages = [0];
   let videoQuery = '', videoStatus = 'all', videoKind = 'all';
   let drawPass = 0;
+  let saleDraft = null;
+  let paired = false;
+  const groups = [
+    ['日常工作', ['members', 'upload']],
+    ['内容与交易', ['videos', 'requests', 'keys', 'plans']],
+    ['运营与设置', ['behavior', 'audit', 'trash', 'settings']],
+  ];
+  const labels = new Map(TABS);
   view.innerHTML = `
     <div class="wrap admin">
       <div class="spread">
-        <div class="section-title" style="margin:0">
-          <h1>后台</h1>
-          <p class="tiny dim">管理账号：<span class="mono">${esc(state.boot.viewer.email)}</span></p>
-        </div>
+        <div class="section-title" style="margin:0"><h1>管理后台</h1>
+          <p class="tiny dim">管理账号 · <span class="mono">${esc(state.boot.viewer.email)}</span></p></div>
         <button class="btn btn-ghost btn-sm" type="button" id="refresh">重新读取</button>
       </div>
       <div id="admin-crumbs"></div>
-      <div class="tabs" role="tablist">${TABS.map(([key, label]) => `<button role="tab" data-tab="${key}" aria-selected="${key === current}">${label}</button>`).join('')}</div>
-      <div id="tab-body" class="stack"></div>
+      <nav class="admin-task-nav" aria-label="后台功能">${groups.map(([label, keys]) => `
+        <div class="admin-task-group"><span>${label}</span><div>${keys.map(key => `
+          <a data-tab="${key}" href="/admin#${key}"${key === current ? ' aria-current="page"' : ''}>${labels.get(key)}</a>`).join('')}</div></div>`).join('')}</nav>
+      <div class="admin-pair-tools"><button class="btn btn-sm btn-ghost" type="button" id="admin-pair" aria-pressed="false" aria-controls="admin-panes">同屏管理用户和上传</button>
+        <span id="admin-upload-summary" role="status" class="tiny dim"></span></div>
+      <div class="admin-panes" id="admin-panes">
+        <div id="tab-body" class="stack"></div>
+        <section id="admin-upload-pane" aria-label="视频上传" hidden></section>
+      </div>
     </div>`;
 
-  document.getElementById('refresh').addEventListener('click', async () => {
-    await reloadBoot();
-    await draw();
-  });
-  const crumbsHost = view.querySelector('#admin-crumbs');
+  const root = view.querySelector('.admin');
+  const slot = root.querySelector('#tab-body');
+  const uploadPane = root.querySelector('#admin-upload-pane');
+  const pair = root.querySelector('#admin-pair');
+  const crumbsHost = root.querySelector('#admin-crumbs');
   const paintCrumbs = () => mountBreadcrumb(crumbsHost, {
-    trail: [{ label: '后台', href: '/admin' }, { label: TABS.find(([key]) => key === current)?.[1] ?? '' }],
-    places: ADMIN_TABS.map(([key, label]) => ({ label, href: `/admin#${key}` })),
+    trail: [{ label: '后台', href: '/admin' }, { label: labels.get(current) }],
+    places: TABS.map(([key, label]) => ({ label, href: `/admin#${key}` })),
   });
-  async function selectTab(key) {
+  const isDesk = () => current === 'members' || current === 'upload';
+  let uploadMount;
+  function ensureUpload() {
+    if (uploadMount) return uploadMount;
+    uploadPane.setAttribute('aria-busy', 'true');
+    uploadMount = uploadTab(uploadPane).catch(error => {
+      if (!root.isConnected) return;
+      uploadMount = null;
+      uploadPane.innerHTML = `<p class="note note-bad">${esc(error.message)}</p><button type="button" class="btn btn-sm">重试读取上传面板</button>`;
+      uploadPane.querySelector('button').addEventListener('click', () => void ensureUpload());
+    }).finally(() => uploadPane.setAttribute('aria-busy', 'false'));
+    return uploadMount;
+  }
+  function showPanes() {
+    pair.hidden = !isDesk();
+    pair.setAttribute('aria-pressed', String(paired));
+    pair.textContent = paired ? '收起另一栏' : '同屏管理用户和上传';
+    const both = isDesk() && paired;
+    root.querySelector('#admin-panes').classList.toggle('is-paired', both);
+    root.querySelector('#admin-panes').dataset.primary = current;
+    slot.hidden = current === 'upload' && !both;
+    const wasHidden = uploadPane.hidden;
+    uploadPane.hidden = current !== 'upload' && !both;
+    if (wasHidden !== uploadPane.hidden) uploadPane.dispatchEvent(new Event('upload-pane-shown'));
+    if (!uploadPane.hidden) void ensureUpload();
+  }
+  pair.addEventListener('click', () => { paired = !paired; void draw(true); });
+  const selectTab = async (key, record = true) => {
+    if (!root.isConnected || !tabKeys.has(key)) return;
     current = key;
-    history.replaceState(null, '', `#${key}`);
+    if (record && location.hash !== `#${key}`) history.pushState(history.state, '', `#${key}`);
     if (key === 'keys') keysPage = 0;
-    for (const other of view.querySelectorAll('[data-tab]')) {
-      other.setAttribute('aria-selected', String(other.dataset.tab === key));
+    for (const link of root.querySelectorAll('[data-tab]')) {
+      if (link.dataset.tab === key) link.setAttribute('aria-current', 'page');
+      else link.removeAttribute('aria-current');
     }
     paintCrumbs();
-    await draw();
-  }
-  for (const button of view.querySelectorAll('[data-tab]')) {
-    button.addEventListener('click', () => void selectTab(button.dataset.tab));
-  }
-  // 顶部搜索、悬停面板和弧形菜单都靠改 hash 换标签，所以这里必须听得见。
+    await draw(true);
+  };
+  root.querySelector('.admin-task-nav').addEventListener('click', event => {
+    const link = event.target.closest('[data-tab]');
+    if (!link || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault(); void selectTab(link.dataset.tab);
+  });
   const onHashChange = () => {
-    const key = location.hash.slice(1);
-    if (tabKeys.has(key) && key !== current) void selectTab(key);
+    if (!root.isConnected) return;
+    const key = location.hash.slice(1) || 'members';
+    if (tabKeys.has(key) && key !== current) void selectTab(key, false);
   };
   window.addEventListener('hashchange', onHashChange);
+  const summary = root.querySelector('#admin-upload-summary');
+  function syncUploadSummary() {
+    const progress = uploadPane.querySelector('#u-progress');
+    const file = uploadPane.querySelector('#file')?.files?.[0];
+    const batch = uploadPane.querySelector('[data-batch-list]')?.childElementCount;
+    const single = progress && !progress.hidden ? uploadPane.querySelector('#u-phase')?.textContent : file ? '已选文件 · ' + file.name : '';
+    const text = [single, batch ? uploadPane.querySelector('[data-batch-summary]')?.textContent : ''].filter(Boolean).join(' · ');
+    if (summary.textContent !== text) summary.textContent = text;
+  }
+  const uploadWatch = new MutationObserver(syncUploadSummary);
+  uploadWatch.observe(uploadPane, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden'] });
+  uploadPane.addEventListener('change', syncUploadSummary);
+  const removed = new MutationObserver(() => {
+    if (root.isConnected) return;
+    window.removeEventListener('hashchange', onHashChange);
+    uploadWatch.disconnect();
+    removed.disconnect();
+  });
+  removed.observe(view, { childList: true });
+  root.querySelector('#refresh').addEventListener('click', async () => {
+    await reloadBoot();
+    if (root.isConnected) {
+      await draw();
+      if (!uploadPane.hidden) uploadPane.dispatchEvent(new Event('upload-pane-shown'));
+    }
+  });
   paintCrumbs();
 
-  const body = () => view.querySelector('#tab-body');
-
-  // 手机上表格会竖排成一张张卡片（见 styles.css 的 ≤860px 段），卡片上每个字段要写它叫什么。
-  // 字段名从这一列的表头按位置取，不在渲染代码里再手写一遍——否则改了 `<th>` 忘改卡片标签，
-  // 同一个意思就有两份互相矛盾的文案。
-  async function draw() {
+  async function draw(reuseMembers = false) {
+    if (!root.isConnected) return;
+    showPanes();
+    if (reuseMembers && isDesk() && slot.firstElementChild?.hasAttribute('data-member-pane')) return;
     const pass = ++drawPass;
-    const box = body();
-    // 换标签是异步的：上一栏还没画完就可能被面包屑/搜索/弧形菜单再换一次，
-    // 这一栏的容器已经不在页面上了。这时候安静地放弃，比抛一个没人看的 TypeError 好。
-    if (!box) return;
+    const box = document.createElement('div');
+    box.className = 'stack';
+    slot.replaceChildren(box);
+    if (slot.hidden) return;
+    const tab = isDesk() ? 'members' : current;
+    if (tab === 'members') box.setAttribute('data-member-pane', '');
     box.setAttribute('aria-busy', 'true');
-    box.innerHTML = '<p class="dim"><span class="spinner"></span> 正在读取…</p>';
+    box.innerHTML = '<p class="dim" role="status">正在读取…</p>';
     try {
-      await ({ upload: uploadTab, videos: videosTab, keys: keysTab, members: membersTab, behavior: behaviorTab, requests: requestsTab, plans: plansTab, settings: settingsTab, audit: auditTab, trash: trashTab })[current](box, pass);
+      await ({ videos: videosTab, keys: keysTab, members: membersTab, behavior: behaviorTab, requests: requestsTab, plans: plansTab, settings: settingsTab, audit: auditTab, trash: trashTab })[tab](box, pass);
       if (pass === drawPass && box.isConnected) labelTableCells(box);
     } catch (error) {
       if (pass !== drawPass || !box.isConnected) return;
-      box.innerHTML = `<div class="note note-bad">${esc(error.message ?? '读取失败')}</div>`;
+      box.innerHTML = `<div class="note note-bad">${esc(error.message ?? '读取失败')}</div><button type="button" class="btn btn-sm">重试读取</button>`;
+      box.querySelector('button').addEventListener('click', () => void draw());
     } finally {
       if (pass === drawPass && box.isConnected) box.setAttribute('aria-busy', 'false');
     }
@@ -1861,90 +1933,28 @@ export async function mountAdmin(view, { reloadBoot }) {
   }
 
 
-  let memberSearch = '';
-  const memberPages = [0], accountPages = [0];
+  const emptyFilters = { q: '', account: 'all', membership: 'all', rank: '' };
+  let memberFilters = { ...emptyFilters };
+  const accountPages = [{ offset: 0, cursor: null }];
+  let openMemberId = '';
   const passwordResets = new Map();
   let paintPasswordResets = () => {};
   const memberWrites = { note: new Set(), toggle: new Set() };
   let paintMemberWrites = () => {};
   async function membersTab(box, pass = drawPass) {
-    const query = memberSearch;
-    const exact = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/.test(query);
-    const accountOnly = Boolean(query) && !exact;
-    const memberOffset = memberPages[memberPages.length - 1], accountOffset = accountPages[accountPages.length - 1];
-    const [data, accounts] = await Promise.all([
-      accountOnly ? Promise.resolve({ items: [], hasMore: false }) : get('admin-members', { ...(query ? { q: query } : {}), offset: memberOffset, limit: 20 }),
-      get('admin-accounts', { ...(query ? { q: query } : {}), active: 1, limit: 20, offset: accountOffset }),
-    ]);
+    const { offset, cursor } = accountPages[accountPages.length - 1];
+    const accounts = await get('admin-accounts', { ...memberFilters, offset, ...(cursor == null ? {} : { cursor }), limit: 20 });
     if (!box.isConnected || pass !== drawPass) return;
-    const rows = data.items.filter((row) => row.verified);
-    const broken = data.items.length - rows.length;
-    const accountRows = accounts.items ?? [];
-    const active = row => !row.revokedAt && (!row.expiresAt || Date.parse(row.expiresAt) > Date.now());
-    const trash = await get('admin-trash-counts').catch(() => null);
-    if (!box.isConnected || pass !== drawPass) return;
-    const countOf = (bucket) => (bucket ? `${bucket.more ? `${bucket.count}+` : bucket.count} 条` : '没数');
-    const pager = (kind, page, offset, count, unit) => `<div class="row" style="gap:10px;flex-wrap:wrap" aria-label="${kind === 'm' ? '会员记录' : '注册账号'}翻页">
-      <button class="btn btn-sm" type="button" id="${kind}-prev"${offset ? '' : ' disabled'}>上一页</button>
-      <span class="tiny dim">${count ? `第 ${offset + 1}–${offset + count} ${unit}` : '本页没有记录'}${page.hasMore ? '，后面还有' : ''}</span>
-      <button class="btn btn-sm" type="button" id="${kind}-next"${page.hasMore ? '' : ' disabled'}>下一页</button></div>`;
-    box.innerHTML = `
-      <section class="panel stack">
-        <div class="section-title"><h2 id="m-results-title" tabindex="-1">会员名单</h2>
-          <p class="tiny dim">「撤销」只停这一条权益，账号还能登录；「停用账号」让账号立即无法登录、正在播放的也会中断，权益原样保留，恢复即还原。转卖和共享账号用这个。</p></div>
-        <form class="row" id="m-search" style="align-items:flex-end;gap:10px">
-          <div class="field" style="flex:1 1 260px"><label for="m-q">查找（完整邮箱，或备注、买家 QQ 的一部分）</label>
-            <input class="input mono" id="m-q" name="q" maxlength="120" placeholder="user@example.com 或备注里的词" value="${esc(memberSearch)}" /></div>
-          <button class="btn" type="submit">查找</button>
-          ${memberSearch ? '<button class="btn btn-ghost" type="button" id="m-clear">清空</button>' : ''}
-        </form>
-        <div id="m-query-status" class="tiny dim" role="status" aria-live="polite"></div>
-        ${accountOnly ? '<div class="note note-warn">备注、QQ 和半截邮箱只查下方注册账号，不显示未筛选的会员名单。找到买家后，用完整邮箱查他的会员记录。</div>' : `<p class="tiny dim">本页已核验 ${rows.length} 条权益：${rows.filter(active).length} 条未到期，${rows.filter(row => !active(row)).length} 条已到期或撤销。这是本页记录数，不是全站会员人数。</p>`}
-        <p class="tiny dim">回收站里：停用账号 ${countOf(trash?.accounts)}、撤销的会员权益 ${countOf(trash?.memberships)}、作废或冻结的码 ${countOf(trash?.keys)}、取消的单 ${countOf(trash?.requests)}。<a href="/admin#trash" data-link>去回收站</a></p>
-        ${broken > 0 ? `<div class="note note-bad">有 ${broken} 条记录的签名与后台不一致，已按无效处理。</div>` : ''}
-        ${accountOnly ? '' : rows.length === 0 ? `<p class="dim">${query ? `完整邮箱「${esc(query)}」在本页没有会员记录。` : '本页没有会员记录。'}</p>` : `
-        <div class="table-wrap"><table class="table">
-          <thead><tr><th>邮箱</th><th>档位</th><th>等级</th><th>到期</th><th>剩余</th><th>来源</th><th>备注（只有后台可见）</th><th></th></tr></thead>
-          <tbody>${rows.map((row) => `<tr>
-            <td class="tiny"><span data-member-note="${esc(row.user.id)}"${row.note ? '' : ' hidden'}>${esc(row.note)}</span><br data-member-note-break="${esc(row.user.id)}"${row.note ? '' : ' hidden'}><span class="mono tiny dim">${esc(row.user.email)}</span>${row.disabledAt ? ' <span class="pill pill-bad">已停用</span>' : ''}${row.revokedAt ? ' <span class="pill">已撤销</span>' : ''}${!row.revokedAt && !active(row) ? ' <span class="pill">已到期</span>' : ''}
-              <div class="tiny dim stamps">${row.registeredAt ? `<span>注册 ${fmtDate(row.registeredAt)}</span>` : ''}${row.lastLoginAt ? `<span>· 最近登录 ${fmtDate(row.lastLoginAt)}</span>` : ''}</div></td>
-            <td class="nowrap">${esc(row.plan)}</td><td class="num">${esc(row.rank)}</td>
-            <td class="num tiny">${row.expiresAt ? fmtDate(row.expiresAt) : '永久'}
-              ${row.revokedAt ? '' : `<div class="days-edit">
-                <input class="input" type="number" inputmode="numeric" step="1" min="-3650" max="3650" data-days="${esc(row.id)}" placeholder="±天数" aria-label="给 ${esc(row.user.email)} 的这条会员加减有效天数（正数延长、负数缩短）" />
-                <button class="btn btn-sm btn-ghost" data-adjust="${esc(row.id)}">改到期</button></div>`}</td>
-            <td class="num tiny">${row.revokedAt ? '—' : remaining(row.expiresAt)}</td><td class="nowrap">${row.source === 'key' ? '激活码' : esc(row.source)}</td>
-            <td style="min-width:190px">
-              <input class="input" data-note-for="${esc(row.user.id)}" maxlength="200" placeholder="这是谁、为什么停用" value="${esc(row.note)}" />
-              <input class="input mono" style="margin-top:6px" data-qq-for="${esc(row.user.id)}" inputmode="numeric" maxlength="12" placeholder="买家 QQ" value="${esc(row.contactQq)}" /></td>
-            <td>${row.revokedAt ? '' : `<button class="btn btn-sm btn-danger" data-revoke="${esc(row.id)}" data-label="${esc(`「${row.plan}」等级 ${row.rank}，${row.expiresAt ? `${fmtDate(row.expiresAt)} 到期` : '不过期'}`)}">撤销</button>`}
-              <button class="btn btn-sm btn-ghost" data-user-toggle="${esc(row.user.id)}" data-disabled="${row.disabledAt ? 'yes' : 'no'}">${row.disabledAt ? '恢复账号' : '停用账号'}</button>
-              <button class="btn btn-sm btn-ghost" data-reset="${esc(row.user.id)}" data-email="${esc(row.user.email)}">重置密码</button>
-              <button class="btn btn-sm btn-ghost" type="button" data-activity="${esc(row.user.id)}" data-email="${esc(row.user.email)}" aria-controls="m-activity" aria-expanded="false">观看记录</button>
-              <button class="btn btn-sm btn-ghost" data-save-note="${esc(row.user.id)}">保存备注</button></td>
-          </tr>`).join('')}</tbody></table></div>`}
-        ${accountOnly ? '' : pager('m', data, memberOffset, data.items.length, '条')}
-        <div class="section-title"><h2 id="a-results-title" tabindex="-1">注册账号</h2>
-          <p class="tiny dim">包括已绑码和未绑码的账号，分页独立于上方会员记录。用完整邮箱查权益；要给买家出码，去「购买记录」记一笔。</p></div>
-        ${accounts.searchScope != null ? `<p class="tiny ${accounts.searchScopeCapped ? 'note note-warn' : 'dim'}">这次查找扫描了 ${Number(accounts.searchScope) || 0} 个账号${accounts.searchScopeCapped ? '，已到搜索范围上限；没找到时请用完整邮箱查找，不能据此判断没有注册' : ''}。</p>` : ''}
-        ${accountRows.length === 0 ? '<p class="dim">本次范围内没有匹配的注册账号。</p>' : `
-        <div class="table-wrap"><table class="table">
-          <thead><tr><th>邮箱</th><th>注册 / 最近登录</th><th>备注 · 买家 QQ</th><th></th></tr></thead>
-          <tbody>${accountRows.map((row) => `<tr>
-            <td class="mono tiny">${esc(row.user.email)}${row.isOwner ? ' <span class="pill pill-good">站长</span>' : ''}</td>
-            <td class="tiny num">${row.registeredAt ? fmtDate(row.registeredAt) : '—'}${row.lastLoginAt ? ` · ${fmtDate(row.lastLoginAt)}` : ' · 从未登录'}</td>
-            <td style="min-width:190px"><span class="tiny" data-account-note="${esc(row.user.id)}">${esc(row.note || '暂无备注')}${row.contactQq ? ` · QQ ${esc(row.contactQq)}` : ''}</span>
-              <input class="input" data-note-for="${esc(row.user.id)}" maxlength="200" placeholder="备注" value="${esc(row.note)}" />
-              <input class="input mono" style="margin-top:6px" data-qq-for="${esc(row.user.id)}" inputmode="numeric" maxlength="12" placeholder="买家 QQ" value="${esc(row.contactQq)}" /></td>
-            <td style="white-space:nowrap">
-              <button class="btn btn-sm btn-ghost" data-save-note="${esc(row.user.id)}">保存备注</button>
-              <button class="btn btn-sm btn-ghost" data-reset="${esc(row.user.id)}" data-email="${esc(row.user.email)}">重置密码</button>
-              <button class="btn btn-sm btn-ghost" data-user-toggle="${esc(row.user.id)}" data-disabled="no">停用账号</button></td>
-          </tr>`).join('')}</tbody></table></div>`}
-        ${pager('a', accounts, accountOffset, accountRows.length, '个账号')}
-        <div id="m-reset-results" class="stack" aria-live="polite"></div>
-        <div id="m-activity"></div>
-      </section>`;
+    box.innerHTML = directoryMarkup({ accounts, filters: memberFilters, page: accountPages.length, offset,
+      openId: openMemberId, viewerId: state.boot.viewer.id });
+    for (const details of box.querySelectorAll('.member-details')) {
+      details.addEventListener('toggle', () => {
+        if (!owns()) return;
+        const id = details.closest('[data-account-id]').dataset.accountId;
+        if (details.open) openMemberId = id;
+        else if (openMemberId === id) openMemberId = '';
+      });
+    }
     const owns = () => box.isConnected && pass === drawPass;
     function paintWrites() {
       if (!owns()) return;
@@ -1956,53 +1966,55 @@ export async function mountAdmin(view, { reloadBoot }) {
     }
     paintMemberWrites = paintWrites;
     paintWrites();
-    async function readMembers(kind = 'm', searching = false) {
-      if (!owns() && !searching) return;
+    const searchForm = box.querySelector('#m-search');
+    async function readMembers() {
+      if (!box.isConnected || !box.contains(searchForm)) return;
       const nextPass = ++drawPass;
       box.setAttribute('aria-busy', 'true');
-      box.querySelector('#m-query-status').textContent = '正在读取名单，旧列表暂不可操作。';
-      for (const button of box.querySelectorAll('[data-user-toggle],[data-save-note],[data-reset],[data-revoke],[data-adjust],#m-prev,#m-next,#a-prev,#a-next')) button.disabled = true;
+      box.querySelector('#m-query-status').textContent = '正在查找用户…';
+      for (const el of box.querySelectorAll('.member-card button, .member-pager button')) el.disabled = true;
       try {
         await membersTab(box, nextPass);
-        if (nextPass === drawPass && box.isConnected) { labelTableCells(box); box.querySelector('#' + kind + '-results-title')?.focus(); }
-      }
-      catch (error) {
+        if (nextPass === drawPass && box.isConnected) box.querySelector('#m-results-title')?.focus({ preventScroll: true });
+      } catch (error) {
         if (nextPass !== drawPass || !box.isConnected) return;
-        const status = box.querySelector('#m-query-status');
-        status.innerHTML = `<p>${esc(error.message)} 名单尚未更新，请重试读取后再操作；不会重新提交会员操作。</p><button class="btn btn-sm" type="button" id="m-read-retry">重试读取名单</button>`;
-        status.querySelector('#m-read-retry').addEventListener('click', () => {
-          if (nextPass === drawPass && box.isConnected) void readMembers(kind, true);
-        });
-        toast(error.message, 'bad');
-      }
-      finally { if (nextPass === drawPass && box.isConnected) box.setAttribute('aria-busy', 'false'); }
+        box.querySelector('#m-query-status').innerHTML = `${esc(error.message)} <button class="btn btn-sm" type="button" id="m-read-retry">重试读取</button>`;
+        box.querySelector('#m-read-retry').addEventListener('click', readMembers);
+      } finally { if (nextPass === drawPass && box.isConnected) box.setAttribute('aria-busy', 'false'); }
     }
-    for (const [kind, pages, page] of [['m', memberPages, data], ['a', accountPages, accounts]]) {
-      box.querySelector('#' + kind + '-prev')?.addEventListener('click', () => {
-        if (!owns() || pages.length < 2) return;
-        pages.pop(); void readMembers(kind);
-      });
-      box.querySelector('#' + kind + '-next')?.addEventListener('click', () => {
-        if (!owns() || !page.hasMore) return;
-        if (!Number.isSafeInteger(page.nextOffset) || page.nextOffset <= pages[pages.length - 1]) { toast('下一页位置没有推进，请重新读取后再试。', 'warn'); return; }
-        pages.push(page.nextOffset); void readMembers(kind);
+    function applyFilters() {
+      const values = new FormData(searchForm);
+      memberFilters = Object.fromEntries(Object.keys(emptyFilters).map(key => [key, String(values.get(key) ?? '').trim()]));
+      accountPages.splice(0, accountPages.length, { offset: 0, cursor: null });
+      openMemberId = ''; void readMembers();
+    }
+    searchForm.addEventListener('submit', event => { event.preventDefault(); applyFilters(); });
+    searchForm.addEventListener('change', event => { if (event.target.tagName === 'SELECT') applyFilters(); });
+    box.querySelector('#m-clear').addEventListener('click', () => {
+      for (const [key, value] of Object.entries(emptyFilters)) searchForm.elements.namedItem(key).value = value;
+      applyFilters();
+    });
+    box.querySelector('#a-prev')?.addEventListener('click', () => {
+      if (!owns() || accountPages.length < 2) return;
+      accountPages.pop(); void readMembers();
+    });
+    box.querySelector('#a-next')?.addEventListener('click', () => {
+      if (!owns() || !accounts.hasMore || !(accounts.nextOffset > offset)) return;
+      accountPages.push({ offset: accounts.nextOffset, cursor: accounts.nextCursor }); void readMembers();
+    });
+    for (const button of box.querySelectorAll('[data-copy-email]')) {
+      button.addEventListener('click', async () => { if (owns()) toast(await copyText(button.dataset.copyEmail) ? '已复制邮箱。' : '可选中卡片上的邮箱手动复制。'); });
+    }
+    for (const button of box.querySelectorAll('[data-register-sale]')) {
+      button.addEventListener('click', () => { if (owns()) { saleDraft = button.dataset.registerSale; void selectTab('requests'); } });
+    }
+    for (const button of box.querySelectorAll('[data-revoked-for]')) {
+      button.addEventListener('click', () => {
+        if (!owns()) return;
+        trashKind = 'memberships'; trashSearch = button.dataset.revokedFor; trashPage.memberships = 0;
+        void selectTab('trash');
       });
     }
-    const searchForm = box.querySelector('#m-search');
-    searchForm.addEventListener('submit', (event) => {
-      event.preventDefault();
-      // 读表单而不是读 currentTarget：异步处理器里的 currentTarget 会被回收。
-      if (!searchForm.isConnected || !box.contains(searchForm)) return;
-      memberSearch = new FormData(searchForm).get('q')?.toString().trim() ?? '';
-      memberPages.splice(0, memberPages.length, 0); accountPages.splice(0, accountPages.length, 0);
-      void readMembers('m', true);
-    });
-    box.querySelector('#m-clear')?.addEventListener('click', () => {
-      if (!searchForm.isConnected || !box.contains(searchForm)) return;
-      memberSearch = '';
-      memberPages.splice(0, memberPages.length, 0); accountPages.splice(0, accountPages.length, 0);
-      void readMembers('m', true);
-    });
     const resetHost = box.querySelector('#m-reset-results');
     function paintResets() {
       if (!owns()) return;
@@ -2163,8 +2175,8 @@ export async function mountAdmin(view, { reloadBoot }) {
         if (memberWrites.toggle.has(userId)) return;
         const disable = button.dataset.disabled === 'no';
         if (!confirm(disable
-          ? '停用这个账号？它会立即无法登录，正在播放的完整版也会中断。会员记录保留，恢复后继续有效。\n从「购买记录」里给它出过、还没兑换的激活码会一起冻结（恢复账号自动解冻）。'
-          : '恢复这个账号的登录和观看？被这次停用冻住的激活码会一起解冻。')) return;
+          ? `停用 ${button.dataset.email}？它会立即无法登录，正在播放的完整版也会中断。会员记录保留，恢复后继续有效。\n从「购买记录」里给它出过、还没兑换的激活码会一起冻结（恢复账号自动解冻）。`
+          : `恢复 ${button.dataset.email} 的登录和观看？被这次停用冻住的激活码会一起解冻。`)) return;
         memberWrites.toggle.add(userId);
         paintWrites();
         try {
@@ -2189,7 +2201,7 @@ export async function mountAdmin(view, { reloadBoot }) {
         if (!owns() || button.disabled) return;
         const id = button.dataset.saveNote;
         if (memberWrites.note.has(id)) return;
-        const row = button.closest('tr');
+        const row = button.closest('[data-account-id]');
         const note = row.querySelector(`[data-note-for="${id}"]`)?.value ?? '';
         const contactQq = row.querySelector(`[data-qq-for="${id}"]`)?.value ?? '';
         // No redraw: the owner may be mid-edit on another row, and these two inputs
@@ -2208,10 +2220,8 @@ export async function mountAdmin(view, { reloadBoot }) {
                 input.defaultValue = value;
               }
             }
-            for (const label of box.querySelectorAll(`[data-member-note="${id}"]`)) { label.textContent = saved.note; label.hidden = !saved.note; }
-            for (const line of box.querySelectorAll(`[data-member-note-break="${id}"]`)) line.hidden = !saved.note;
             for (const label of box.querySelectorAll(`[data-account-note="${id}"]`)) label.textContent = `${saved.note || '暂无备注'}${saved.contactQq ? ` · QQ ${saved.contactQq}` : ''}`;
-            toast('这一行的备注已保存，只有后台看得到。同账号未修改的输入已同步；正在编辑的内容会保留。');
+            toast('已保存这位用户的备注和 QQ。');
           }
         } catch (error) {
           if (owns()) toast(error.message, 'bad');
@@ -2237,57 +2247,29 @@ export async function mountAdmin(view, { reloadBoot }) {
         }
       });
     }
-    for (const button of box.querySelectorAll('[data-adjust]')) {
-      button.addEventListener('click', async () => {
-        if (!owns() || button.disabled) return;
-        const id = button.dataset.adjust;
-        const field = box.querySelector(`[data-days="${id}"]`);
-        const days = Number(field?.value.trim() ?? '');
-        if (!Number.isSafeInteger(days) || days === 0 || Math.abs(days) > 3650) {
-          field?.setAttribute('aria-invalid', 'true');
-          toast('天数要填 -3650 到 3650 之间的非零整数：正数延长，负数缩短，例如 30 或 -7。', 'warn');
-          field?.focus();
-          return;
-        }
-        field?.removeAttribute('aria-invalid');
-        if (!confirm(`本次${days > 0 ? '延长' : '缩短'}这条会员 ${Math.abs(days)} 天，确认提交？缩短到过去会立即过期。`)) return;
-        button.disabled = true;
-        try {
-          const result = await post('admin-member-adjust-days', { id, days });
-          const until = fmtDate(result.expiresAt);
-          // 缩短到过去是合法操作；这里只确认当前权益过期，不能推断其它权益是否仍有效。
-          toast(result.expiresAt <= new Date().toISOString()
-            ? `已改到 ${until}：这条权益已经过期；账号还能看什么，以其它有效权益为准。`
-            : `已${days > 0 ? '延长' : '缩短'} ${Math.abs(days)} 天，这条现在到 ${until} 到期。`);
-          if (pass === drawPass && box.isConnected) await draw();
-        } catch (error) {
-          toast(error.message, 'bad');
-        } finally {
-          button.disabled = false;
-        }
+    for (const row of accounts.items) {
+      const card = box.querySelector(`[data-account-id="${row.user.id}"]`);
+      bindEntitlementEditor(card, row, {
+        save: values => post('admin-account-entitlement', values),
+        refresh: async () => { toast('已更新会员等级和有效期'); if (owns()) await readMembers(); },
       });
     }
-  }
-
-  function remaining(expiresAt) {
-    if (!expiresAt) return '—';
-    const ms = Date.parse(expiresAt) - Date.now();
-    if (ms <= 0) return '已到期';
-    const days = Math.ceil(ms / 86400000);
-    return `${days} 天`;
   }
 
   // ---------------------------------------------------------------- requests
   async function requestsTab(box) {
     const [data, planRows] = await Promise.all([get('admin-requests', { limit: 100 }), get('admin-plans')]);
+    if (!box.isConnected) return;
     const plans = planRows.plans ?? [];
+    const email = saleDraft || '';
+    saleDraft = null;
     box.innerHTML = `
       <section class="panel stack">
         <div class="section-title"><h2>购买记录</h2>
           <p class="tiny dim">前台已经不让买家填表了。在 QQ 谈好后在这里记一笔，出码后点「已成交」。</p></div>
-        <form class="row" id="manual-request" style="gap:10px;align-items:flex-end">
+        <form class="row" id="manual-request"${email ? ' data-prefilled' : ''} style="gap:10px;align-items:flex-end">
           <div class="field" style="flex:1 1 220px"><label for="mr-email">买家邮箱</label>
-            <input class="input" id="mr-email" type="email" inputmode="email" autocomplete="off" placeholder="对方要用来注册的那个邮箱" /></div>
+            <input class="input" id="mr-email" value="${esc(email)}" type="email" inputmode="email" autocomplete="off" placeholder="对方要用来注册的那个邮箱" /></div>
           <div class="field" style="flex:1 1 150px"><label for="mr-plan">档位</label>
             <select class="input" id="mr-plan">${plans.map((plan) => `<option value="${esc(plan.code)}">${esc(plan.name)}</option>`).join('')}</select></div>
           <div class="field" style="flex:1 1 200px"><label for="mr-note">备注（选填）</label>
@@ -2601,6 +2583,7 @@ export async function mountAdmin(view, { reloadBoot }) {
     membership_revoke: '撤销了一条会员权益',
     membership_restore: '把一条撤销的会员权益重新生效',
     membership_adjust: '改了会员的有效天数',
+    account_entitlement: '调整了用户等级和有效期',
     user_disable: '停用了某个账号',
     user_enable: '恢复了某个账号',
     user_note: '保存了买家备注',
@@ -2673,6 +2656,10 @@ export async function mountAdmin(view, { reloadBoot }) {
   const auditAction = (row) => {
     const label = AUDIT_LABELS[row.action] ?? row.action;
     const detail = auditDetail(row);
+    if (row.action === 'account_entitlement') {
+      const term = (rank, end) => rank ? rank + ' 级 · ' + (end ? fmtDate(end) : '永久') : '普通用户';
+      return label + '，' + term(detail.fromRank, detail.from) + ' → ' + term(detail.rank, detail.to);
+    }
     if (row.action === 'membership_adjust' && Number.isFinite(Number(detail.days))) {
       const days = Number(detail.days);
       return `${label}：${days > 0 ? '+' : ''}${days} 天${detail.to ? `，到 ${fmtDate(detail.to)}` : ''}`;
