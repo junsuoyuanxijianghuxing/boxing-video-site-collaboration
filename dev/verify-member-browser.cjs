@@ -47,11 +47,17 @@ async function main() {
       '-f',
       'lavfi',
       '-i',
-      'color=c=navy:s=160x96:r=10',
+      'testsrc2=size=640x360:rate=24',
       '-t',
-      '2',
+      '10',
+      '-threads',
+      '1',
       '-c:v',
       'libx264',
+      '-preset',
+      'ultrafast',
+      '-crf',
+      '16',
       '-pix_fmt',
       'yuv420p',
       '-movflags',
@@ -73,6 +79,7 @@ async function main() {
         tier_rank: 2,
         preview_seconds: 10,
         plain_size: 5000,
+        chunk_size: 1024 * 1024,
         content_type: 'video/mp4',
         object_prefix: randomUUID(),
       };
@@ -183,7 +190,20 @@ async function main() {
     assert.equal(await admin.locator('#mr-email').inputValue(), buyerEmail);
     const nav = key => admin.locator('.admin-task-nav [data-tab="' + key + '"]').click();
     await nav('upload');
-    await admin.locator('#file').setInputFiles(file);
+    const selectMode = mode => admin.locator('[data-upload-mode="' + mode + '"]').click();
+    const singlePicker = admin.locator('#file');
+    assert.ok(await admin.locator('#batch-upload-host').isHidden());
+    assert.ok(await admin.locator('#upload-form').isHidden());
+    await singlePicker.setInputFiles({ name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('notes') });
+    await admin.locator('#probe').filter({ hasText: '请选择 MP4' }).waitFor();
+    assert.ok(await admin.locator('#u-go').isDisabled());
+    await singlePicker.setInputFiles({ name: 'previous.mp4', mimeType: 'video/mp4', buffer: require('node:fs').readFileSync(file) });
+    await admin.waitForFunction(() => !document.querySelector('#u-go')?.disabled);
+    await singlePicker.setInputFiles(file);
+    await selectMode('batch');
+    assert.ok(await admin.locator('#single-upload').isHidden());
+    await selectMode('single');
+    assert.equal(await admin.locator('#u-title').inputValue(), 'sample');
     await admin.waitForFunction(() => !document.querySelector('#u-go')?.disabled);
     await admin.locator('#u-title').fill('单条上传切换测试');
     await nav('members');
@@ -243,7 +263,9 @@ async function main() {
     await switchDuringUpload(() => admin.locator('#u-go').click());
     await nav('upload');
     const queue = admin.locator('[data-batch-files]');
-    await queue.evaluate(el => (el.closest('details').open = true));
+    assert.ok(await admin.locator('#upload-form').isHidden());
+    assert.equal(await singlePicker.inputValue(), '');
+    await selectMode('batch');
     await queue.setInputFiles(file);
     await admin.locator('[data-batch-start]:enabled').waitFor();
     await switchDuringUpload(() => admin.locator('[data-batch-start]').click());
@@ -289,6 +311,33 @@ async function main() {
         .evaluate(el => getComputedStyle(el).gridTemplateColumns.split(' ').length),
       1
     );
+    const picker = admin.locator('#admin-section-picker');
+    await picker.selectOption('videos');
+    await admin.locator('#admin-video-status').waitFor();
+    await picker.selectOption('members');
+    await admin.locator('#m-q:visible').waitFor();
+    const sampleDraft = drafts.find(row => row.title === 'sample');
+    await admin.evaluate(async id => {
+      const { post } = await import('/assets/api.js');
+      await post('admin-video-update', { videoId: id, status: 'published', tier_rank: 2, preview_seconds: 3 });
+    }, sampleDraft.id);
+    await buyer.goto(origin + '/library?q=sample');
+    await buyer.locator('.screening-card').filter({ hasText: 'sample' }).click();
+    await buyer.locator('.watch-heading h1').filter({ hasText: 'sample' }).waitFor();
+    const reel = buyer.locator('#reel');
+    await reel.evaluate(video => { void video.play().catch(() => {}); });
+    await buyer.waitForFunction(() => document.querySelector('#reel')?.currentTime > 0, null, { timeout: 10000 });
+    assert.ok(await buyer.locator('.stage').evaluate(stage =>
+      stage.getBoundingClientRect().bottom <= document.querySelector('.watch-heading').getBoundingClientRect().top));
+    assert.ok(await buyer.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+    await buyer.locator('#paywall:not([hidden])').waitFor();
+    assert.equal(await buyer.locator('#paywall-title').innerText(), '试看结束');
+    await buyer.locator('.watch-back').click();
+    await buyer.locator('#kind-list .screening-card').first().waitFor();
+    await buyer.goto(origin + '/v/' + videos[0].id);
+    await buyer.getByRole('heading', { name: '这条视频暂无试看' }).waitFor();
+    assert.equal(await buyer.locator('#reel').getAttribute('src'), null);
+    console.log('PASS 手机切换后台；草稿发布、播放、试看结束和返回片库；无可用试看时显示会员入口');
     assert.deepEqual(errors, []);
     console.log(
       'PASS 140 条目录跨页筛选及排序、无匹配、直接链接与刷新；360px、390px 双栏自动堆叠，片库及后台无横向溢出'
