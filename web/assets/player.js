@@ -28,6 +28,7 @@ export async function mountPlayer(view, { id, isCurrent = () => view.isConnected
   if (!isCurrent()) return;
   const video = session.video;
   const isPreview = session.mode === 'preview';
+  const noPreview = isPreview && !session.hls && session.previewBytes === 0;
   const previewSeconds = Number(video.previewSeconds) || 0;
   const totalSeconds = Number(video.durationSeconds) || 0;
   const lastPosition = Number(session.lastPosition) || 0;
@@ -40,7 +41,7 @@ export async function mountPlayer(view, { id, isCurrent = () => view.isConnected
       <a class="watch-back" href="/library" data-link><span aria-hidden="true">←</span> 返回视频库</a>
       <div class="watch-screen">
       <div class="stage" id="stage">
-        <video id="reel"${isPreview ? ` src="${esc(session.mediaUrl)}"` : ''}${session.posterUrl ? ` poster="${esc(session.posterUrl)}"` : ''}
+        <video id="reel"${isPreview && !noPreview ? ` src="${esc(session.mediaUrl)}"` : ''}${session.posterUrl ? ` poster="${esc(session.posterUrl)}"` : ''}
                controls playsinline webkit-playsinline x5-playsinline preload="auto"
                controlsList="nodownload noremoteplayback" disablepictureinpicture
                disableremoteplayback aria-label="${esc(video.title)}"></video>
@@ -49,10 +50,10 @@ export async function mountPlayer(view, { id, isCurrent = () => view.isConnected
           <div class="wm-row wm-row-a"><div class="wm-track" id="wm-a"></div></div>
           <div class="wm-row wm-row-b"><div class="wm-track wm-track-rev" id="wm-b"></div></div>
         </div>
-        <div class="paywall" id="paywall" hidden>
+        <div class="paywall" id="paywall"${noPreview ? '' : ' hidden'}>
           <div>
-            <h2 id="paywall-title">试看结束</h2>
-            <p id="paywall-body">绑定激活码后即可观看完整内容。</p>
+            <h2 id="paywall-title">${noPreview ? '这条视频暂无试看' : '试看结束'}</h2>
+            <p id="paywall-body">观看全片需要 ${esc(membershipRequirement(video.tierRank))}。</p>
             <div class="row" style="justify-content:center">
               <a class="btn btn-primary" href="/pricing" data-link>看档位和价格</a>
               ${state.boot?.viewer ? '<a class="btn" href="/account" data-link>我有激活码，去绑定</a>' : '<a class="btn" href="/login" data-link>登录</a>'}
@@ -81,7 +82,7 @@ export async function mountPlayer(view, { id, isCurrent = () => view.isConnected
 
       </div>
       <header class="watch-heading">
-        <div class="watch-context"><span>${isPreview ? '试看 ' + fmtDuration(previewSeconds) : '完整版'}</span>
+        <div class="watch-context"><span>${noPreview ? '暂无试看' : isPreview ? '试看 ' + fmtDuration(previewSeconds) : '完整版'}</span>
           <span>全片 ${durationClock(video.durationSeconds)}</span>
           ${isPreview ? `<span>${esc(membershipRequirement(video.tierRank))}可看全片</span>` : ''}</div>
         <h1>${esc(video.title)}</h1>
@@ -141,7 +142,7 @@ export async function mountPlayer(view, { id, isCurrent = () => view.isConnected
     else toast(`复制未完成。请长按上方的 QQ 号 ${contactQq} 手动复制，再发送教学影像名称和你的登录邮箱。`, 'bad');
   });
 
-  let revealed = false;
+  let revealed = noPreview;
   function revealPaywall() {
     if (revealed) return;
     revealed = true;
@@ -181,7 +182,6 @@ export async function mountPlayer(view, { id, isCurrent = () => view.isConnected
     // 界面必须说清楚是没拿到数据，并给一条不用刷新整页的重试。
     const code = Number(reel.error?.code ?? 0);
     const kind = reel.dataset.playbackFailure || (code === 4 ? 'unsupported' : code === 3 ? 'decode' : 'network');
-    // "换个浏览器看"这句话有四格失败要说，抄四份必漂（有一格改了、其余三格还指着旧说法）。
     const appleMobile = /iPhone|iPad|iPod/i.test(navigator.userAgent || '')
       || (/Macintosh/i.test(navigator.userAgent || '') && navigator.maxTouchPoints > 1);
     const SWITCH_BROWSER = appleMobile
@@ -189,7 +189,7 @@ export async function mountPlayer(view, { id, isCurrent = () => view.isConnected
       : '改用电脑上的 Chrome 或 Edge，或手机上的系统自带浏览器，登录后重新打开这条页面';
     const messages = {
       protected: ['当前设备未能启用站内播放器', `完整版需要使用本站播放器。请先关闭云加速、视频增强或独立播放后重试；仍不行请${SWITCH_BROWSER}。`],
-      processing: ['视频正在准备受保护版本', '完整版分段尚未准备好，请稍后再试；页面不会改用完整 MP4 下载地址。'],
+      processing: ['完整版正在处理', '视频处理完成后就能播放。可以先看其他视频。'],
       unsupported: ['当前浏览器的播放模式不兼容', `请在浏览器设置里关闭云加速或视频增强后重新打开；也可以${SWITCH_BROWSER}。`],
       native: ['当前浏览器尚未开始播放', `原生播放器暂未显示画面。请检查连接；若一直停在这里，可关闭云加速或视频增强，或${SWITCH_BROWSER}。`],
       authorization: ['播放授权未通过', '登录状态、会员权益或播放地址可能已失效。请重新登录；若已登录仍失败，请关闭浏览器的云加速或独立视频播放后再试。'],
@@ -287,7 +287,7 @@ export async function mountPlayer(view, { id, isCurrent = () => view.isConnected
   // Short-lived media credentials are re-issued before they expire so a long
   // video keeps playing without ever exposing a durable URL.
   const renew = Math.max(60_000, (Number(session.expiresInSeconds) || 900) * 1000 - 60_000);
-  const renewTimer = session.protectedPlayback ? null : window.setTimeout(async () => {
+  const renewTimer = session.protectedPlayback || noPreview ? null : window.setTimeout(async () => {
     window.clearInterval(timer);
     const at = reel.currentTime;
     const wasPlaying = !reel.paused;
