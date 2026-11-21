@@ -7,7 +7,7 @@ import { mountLibraryToolbar } from './library-toolbar.mjs';
 import { canResumeFrom, isWatchedToEnd } from './play-progress.mjs';
 
 const kinds = [['all', '全部'], ['live', '真实拳击'], ['anime', '动画拳击']];
-const sections = [['all', '全部教学影像'], ['latest', '最近更新'], ['series', '教学合集']];
+const sections = [['all', '全部视频'], ['latest', '最近更新'], ['series', '教学合集']];
 const urlKeys = ['section', 'page', 'per', 'kind', 'tier', 'duration', 'q', 'view', 'range', 'group', 'access', 'progress', 'sort'];
 let remembered = null;
 const pick = (value, choices, fallback) => choices.includes(value) ? value : fallback;
@@ -158,8 +158,8 @@ export function mountLibraryBrowser(root, { pages, boot, mergeItems, issueNumber
     node('[data-video-controls]').hidden = isSeries;
     advanced.hidden = isSeries;
     node('#view-modes').hidden = isSeries;
-    node('#library-search-label').textContent = isSeries ? '搜索教学合集' : '搜索教学影像';
-    input.placeholder = isSeries ? '搜索合集名称、角色或作品' : '搜索教学影像';
+    node('#library-search-label').textContent = isSeries ? '搜索教学合集' : '搜索视频';
+    input.placeholder = isSeries ? '搜索合集名称、角色或作品' : '搜索视频';
     node('#library-date-tools').hidden = isSeries;
     node('#library-sort-label').hidden = isLatest;
     node('#library-group-label').hidden = !isLatest;
@@ -188,14 +188,14 @@ export function mountLibraryBrowser(root, { pages, boot, mergeItems, issueNumber
       if (ui.tier !== 'all') chips.push(['tier', tierName(Number(ui.tier))]);
       if (ui.duration !== 'all') chips.push(['duration', { short: '少于 2 分钟', medium: '2 至不足 5 分钟', long: '5 分钟及以上' }[ui.duration]]);
       if (ui.access !== 'all') chips.push(['access', ui.access === 'full' ? '已解锁完整版' : '仅能试看']);
-      if (ui.progress !== 'all') chips.push(['progress', { new: '还没开始', resume: '可继续观看', finished: '看到过结尾' }[ui.progress]]);
+      if (ui.progress !== 'all') chips.push(['progress', { new: '还没开始', resume: '可继续观看', finished: '已看至结尾' }[ui.progress]]);
     }
     const activeFilters = node('#library-active-filters');
     activeFilters.hidden = !chips.length;
     activeFilters.innerHTML = chips.map(([key, label]) => `<button type="button" class="chip" data-remove-filter="${key}" aria-label="移除筛选：${esc(label)}">${esc(label)} <span aria-hidden="true">×</span></button>`).join('');
     node('#library-filter-count').textContent = activeCount ? ` ${activeCount}` : '';
     node('#catalog-viewer-context').textContent = boot.privileged ? '管理员预览：可查看全部已发布内容'
-      : boot.rank > 0 ? `当前会员 ${boot.rank} 级 · 按卡片要求观看完整内容` : '试看无需登录 · 完整观看按会员等级开放';
+      : boot.rank > 0 ? `当前会员 ${boot.rank} 级 · 可筛选「已解锁完整版」` : '可先试看，标有「公开」的视频可直接看完整版。';
     node('#library-result-count').innerHTML = `${esc(isLatest ? ui.range === 'all' ? '全部更新' : publicationRanges.find(([key]) => key === ui.range)[1] + '更新' : name)} ${windowed.total ? `<strong>${windowed.from}–${windowed.to}</strong> / ${windowed.total}` : '<strong>0</strong>'} ${isSeries ? '个' : '条'}${filtered ? ' · 已筛选 <button type="button" class="linklike" data-clear-filters>清空</button>' : ''}`;
     const note = node('#library-scope-note');
     const unknownDates = publications.filter(item => !Number.isFinite(publicationStamp(item))).length;
@@ -207,11 +207,11 @@ export function mountLibraryBrowser(root, { pages, boot, mergeItems, issueNumber
     if (isSeries) { note.hidden = !pages.seriesError; note.textContent = '合集信息暂时未能读取，可先浏览教学影像目录。'; }
     results.setAttribute('aria-busy', String(pending && !loadError));
     if (pending) {
-      node('#library-result-count').textContent = loadError ? '完整结果暂未读完' : '正在检索全部教学影像…';
+      node('#library-result-count').textContent = loadError ? '完整结果暂未读完' : '正在搜索全部视频…';
       note.hidden = true;
       results.innerHTML = loadError
         ? '<div class="library-empty"><p>目录暂未读完，请重试以查看完整结果。</p><button class="btn" type="button" data-library-more>重试读取</button></div>'
-        : '<p class="dim">正在读取后续目录…</p>';
+        : '<p class="dim">正在加载更多视频…</p>';
       for (const id of ['#library-page-quick', '#library-pagination', '#library-load-more']) node(id).replaceChildren();
       remember(push);
       if (!loading && !loadError) void loadMore();

@@ -2,7 +2,7 @@
 export function lessonLibraryMarkup({ promo, purchaseSteps }) {
   return `<div class="wrap lesson-home compact-library liquid-library">
     <header class="library-masthead">
-      <div class="library-heading"><p class="lesson-kicker">BOXING WITH ANIME <span>教学 · 技术 · 复盘</span></p><h1 id="lesson-title"><span class="library-title-main">拳击教学影像</span><br class="library-title-break"><span class="library-title-tail">与赛后复盘</span></h1><p class="library-intro">看清每一回合的动作、节奏与攻防选择。</p><div class="library-hero-actions"><a class="btn btn-primary" href="#teaching-library">浏览教学影像 ↘</a><a class="library-recent-link" href="/library?section=latest&amp;range=7&amp;page=1" data-wall-recent>查看近期更新 ↗</a></div><p class="library-overview" id="library-overview" role="status">正在读取教学影像目录…</p></div>
+      <div class="library-heading"><h1 id="lesson-title">拳击视频库</h1><div class="library-hero-actions"><a class="btn btn-primary" href="#teaching-library">浏览全部视频</a><a class="library-recent-link" href="/library?section=latest&amp;range=7&amp;page=1" data-wall-recent>近 7 天更新</a></div><p class="library-overview" id="library-overview" role="status">正在读取教学影像目录…</p></div>
       <section id="library-feature" class="liquid-cover-wall" aria-label="精选教学影像封面墙" data-running="false" data-rotating="false"><div class="liquid-wall-glow" aria-hidden="true"></div><div class="liquid-wall-grid" data-wall-grid aria-live="off"></div><div class="liquid-wall-controls"><span data-wall-status>精选教学影像</span><div><button type="button" data-wall-next>换一组 ↻</button><button type="button" data-wall-pause aria-pressed="false" aria-label="暂停封面墙动效">暂停流动</button></div></div></section>
     </header>
     <section class="lesson-catalog compact-catalog" id="teaching-library" aria-labelledby="catalog-title">
@@ -10,7 +10,7 @@ export function lessonLibraryMarkup({ promo, purchaseSteps }) {
       <div class="library-browse-bar">
         <nav id="library-sections" class="library-sections" aria-label="教学影像栏目"></nav>
         <div class="library-search-row"><label class="library-search" for="lib-q"><span class="catalog-sr-only" id="library-search-label">搜索教学影像</span><input id="lib-q" class="input" type="search" placeholder="搜索教学影像名称或说明" autocomplete="off"></label>
-          <details class="library-advanced" id="library-advanced"><summary>更多筛选<span id="library-filter-count"></span></summary><div class="library-advanced-panel"><label>完整观看要求<select class="input" id="library-tier"></select></label><label>当前观看权限<select class="input" id="library-access"><option value="all">全部权限</option><option value="full">已解锁完整版</option><option value="preview">仅能试看</option></select></label><label><span id="library-progress-label">学习进度</span><select class="input" id="library-progress"><option value="all">全部进度</option><option value="new">还没开始</option><option value="resume">可继续观看</option><option value="finished">看到过结尾</option></select></label><button class="btn btn-sm btn-ghost" type="button" data-library-refresh>刷新目录与进度</button><button class="btn btn-sm btn-ghost" type="button" data-clear-filters>清空筛选</button></div></details>
+          <details class="library-advanced" id="library-advanced"><summary>更多筛选<span id="library-filter-count"></span></summary><div class="library-advanced-panel"><label>视频所需等级<select class="input" id="library-tier"></select></label><label>我能看什么<select class="input" id="library-access"><option value="all">全部权限</option><option value="full">已解锁完整版</option><option value="preview">仅能试看</option></select></label><label><span id="library-progress-label">学习进度</span><select class="input" id="library-progress"><option value="all">全部进度</option><option value="new">还没开始</option><option value="resume">可继续观看</option><option value="finished">已看至结尾</option></select></label><button class="btn btn-sm btn-ghost" type="button" data-library-refresh>刷新目录与进度</button><button class="btn btn-sm btn-ghost" type="button" data-clear-filters>清空筛选</button></div></details>
           <div class="row library-view-modes" id="view-modes" role="group" aria-label="教学影像显示方式"></div>
         </div>
       </div>
@@ -29,9 +29,9 @@ export function lessonLibraryMarkup({ promo, purchaseSteps }) {
       <div id="library-load-more"></div>
     </section>
     <details class="library-help" id="library-help"><summary>观看帮助与会员说明<span>试看、档位与激活码</span></summary><div class="library-help-body">
-      <p>${promo || '每条教学影像的时长与会员要求都在卡片中显示。'}</p>
-      <div class="library-help-links"><a href="/pricing" data-link>查看会员档位与价格 ↗</a><a href="/account" data-link>绑定激活码与查看观看记录 ↗</a></div>
-      <div class="faq-list"><details><summary>未购买会员，可以先试看吗？</summary><p>可以。打开教学影像查看试看内容，具体试看时长以播放页面为准。</p></details><details><summary>怎样判断会员能观看哪些教学影像？</summary><p>卡片标明完整观看所需等级。“任意档位会员”对应一级内容，更高等级内容需要相应等级的会员。</p></details><details><summary>怎样购买并绑定激活码？</summary><p>${purchaseSteps}</p></details><details><summary>会员到期后怎样继续观看？</summary><p>观看记录仍会保留。到“会员与购买”联系站长选择续期档位。</p></details></div>
+      ${promo ? `<p>${promo}</p>` : ''}
+      <div class="library-help-links"><a href="/pricing" data-link>查看会员价格</a><a href="/account" data-link>兑换激活码 / 查看记录</a></div>
+      <div class="faq-list"><details><summary>未购买会员，可以先试看吗？</summary><p>可以。打开教学影像查看试看内容，具体试看时长以播放页面为准。</p></details><details><summary>我的会员能看哪些视频？</summary><p>打开视频可查看所需等级。你的会员达到该等级，就能看完整版。</p></details><details><summary>怎样购买并绑定激活码？</summary><p>${purchaseSteps}</p></details><details><summary>会员到期后怎样继续观看？</summary><p>观看记录仍会保留。到“会员与购买”联系站长选择续期档位。</p></details></div>
     </div></details>
   </div>`;
 }

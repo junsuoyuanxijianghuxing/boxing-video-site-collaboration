@@ -34,31 +34,17 @@ export async function mountPlayer(view, { id, isCurrent = () => view.isConnected
   // 只有落在中间的位置才值得自动跳：开头几秒没有意义，快到底时跳过去反而像片子变短了。
   // 两个门限按片长算，写死 15/20 秒会让 30 秒的示范课永远接不上（见 play-progress.mjs）。
   const canResume = session.mode === 'full' && canResumeFrom(lastPosition, totalSeconds);
-  // 试看结束是全站购买意图最高的一刻：联系方式必须就在这一屏上，不能让他先换一页。
-  const contactQq = state.boot?.settings?.contact_qq || '未配置';
+  const contactQq = state.boot?.settings?.contact_qq || '';
   view.innerHTML = `
     <div class="player-shell"><div class="player">
-      <div class="spread">
-        <div style="min-width:0">
-          <span class="eyebrow"><i class="dot"></i> ${isPreview ? '试看中' : '完整版'}</span>
-          <h1 style="margin-top:6px">${esc(video.title)}</h1>
-          <div class="player-facts"><div><span>本集时长</span><strong class="card-clock">${durationClock(video.durationSeconds)}</strong></div><div><span>完整观看</span><strong class="card-tier">${esc(membershipRequirement(video.tierRank))}</strong></div><p>${isPreview ? `可试看 ${fmtDuration(previewSeconds)}，其余部分需要对应会员权益` : '已授权观看完整内容'}</p></div>
-        </div>
-        <a class="btn btn-ghost btn-sm" href="/library" data-link>教学影像</a>
-      </div>
-
+      <a class="watch-back" href="/library" data-link><span aria-hidden="true">←</span> 返回视频库</a>
+      <div class="watch-screen">
       <div class="stage" id="stage">
-        <!-- preload="metadata" 让浏览器按下播放才开始取数：一条 400 MB 的片子
-             点进去会先转圈，看起来就是"卡住了"。 -->
         <video id="reel"${isPreview ? ` src="${esc(session.mediaUrl)}"` : ''}${session.posterUrl ? ` poster="${esc(session.posterUrl)}"` : ''}
                controls playsinline webkit-playsinline x5-playsinline preload="auto"
                controlsList="nodownload noremoteplayback" disablepictureinpicture
                disableremoteplayback aria-label="${esc(video.title)}"></video>
-        <div class="stage-badge">
-          <span class="pill ${isPreview ? 'pill-acid' : 'pill-good'}">${isPreview ? `试看 ${fmtDuration(previewSeconds)} / 完整教学影像 ${fmtDuration(video.durationSeconds)}` : '完整教学影像'}</span>
-        </div>
-        ${isPreview ? `<div class="cut-note" id="cut-note" hidden></div>
-        <div class="cut-flag">免费试看结束于 ${fmtDuration(previewSeconds)}，后面 ${fmtDuration(Math.max(0, (Number(video.durationSeconds) || 0) - previewSeconds))} 需要会员</div>` : ''}
+        ${isPreview ? '<div class="cut-note" id="cut-note" hidden></div>' : ''}
         <div class="wm" aria-hidden="true">
           <div class="wm-row wm-row-a"><div class="wm-track" id="wm-a"></div></div>
           <div class="wm-row wm-row-b"><div class="wm-track wm-track-rev" id="wm-b"></div></div>
@@ -71,7 +57,7 @@ export async function mountPlayer(view, { id, isCurrent = () => view.isConnected
               <a class="btn btn-primary" href="/pricing" data-link>看档位和价格</a>
               ${state.boot?.viewer ? '<a class="btn" href="/account" data-link>我有激活码，去绑定</a>' : '<a class="btn" href="/login" data-link>登录</a>'}
             </div>
-            <p class="tiny dim" id="paywall-qq">收款和发码都在这个号上：加 QQ <span class="mono">${esc(contactQq)}</span>
+            <p class="tiny dim" id="paywall-qq"${contactQq ? '' : ' hidden'}>购买咨询 · QQ <span class="mono">${esc(contactQq)}</span>
               <button class="btn btn-sm btn-ghost" type="button" id="paywall-copy">复制</button></p>
           </div>
         </div>
@@ -80,12 +66,12 @@ export async function mountPlayer(view, { id, isCurrent = () => view.isConnected
             <h2 id="stage-error-title">暂时无法播放</h2>
             <p id="stage-error-body">视频未能继续加载，请重新加载一次。</p>
             <div class="row" style="justify-content:center">
-              <button class="btn btn-primary" type="button" id="stage-error-retry">重新取一次</button>
+              <button class="btn btn-primary" type="button" id="stage-error-retry">重新加载</button>
               <button class="btn" type="button" id="stage-error-copy">复制页面链接</button>
               <a class="btn" id="stage-error-login" href="/login" data-link hidden>重新登录</a>
-              <a class="btn" href="/library" data-link>回教学影像库</a>
+              <a class="btn" href="/library" data-link>返回视频库</a>
             </div>
-            <p class="tiny dim">重试仍无法播放，请联系 QQ <span class="mono">${esc(contactQq)}</span>，说明教学影像名称和无法播放的位置。</p>
+            <p class="tiny dim"${contactQq ? '' : ' hidden'}>仍然无法播放？联系 QQ <span class="mono">${esc(contactQq)}</span>，说明教学影像名称和无法播放的位置。</p>
           </div>
         </div>
       </div>
@@ -93,8 +79,15 @@ export async function mountPlayer(view, { id, isCurrent = () => view.isConnected
       <div class="progress-line" aria-hidden="true"><i id="pbar" style="width:0%"></i>${isPreview && Number(video.durationSeconds) > 0
     ? `<i class="cut-tick" style="left:${Math.min(100, (previewSeconds / Number(video.durationSeconds)) * 100).toFixed(2)}%"></i>` : ''}</div>
 
+      </div>
+      <header class="watch-heading">
+        <div class="watch-context"><span>${isPreview ? '试看 ' + fmtDuration(previewSeconds) : '完整版'}</span>
+          <span>全片 ${durationClock(video.durationSeconds)}</span>
+          ${isPreview ? `<span>${esc(membershipRequirement(video.tierRank))}可看全片</span>` : ''}</div>
+        <h1>${esc(video.title)}</h1>
+      </header>
       ${canResume ? `<div class="row" id="resume-note" style="gap:10px;align-items:center;margin-top:10px">
-        <span class="tiny dim">上次看到 <span class="num mono">${fmtDuration(lastPosition)}</span>，已经帮你接上。</span>
+        <span class="tiny dim">上次看到 <span class="num mono">${fmtDuration(lastPosition)}</span>，已继续播放。</span>
         <button class="btn btn-sm" type="button" id="resume-restart">从头播放</button>
       </div>` : ''}
 
@@ -102,11 +95,11 @@ export async function mountPlayer(view, { id, isCurrent = () => view.isConnected
       ${video.description ? `<div class="panel"><p class="dim">${esc(video.description)}</p></div>` : ''}
       ${state.boot?.privileged ? `<div class="panel stack">
         <div class="row" style="gap:8px;align-items:center">
-          <span class="tiny dim">以等级预览（仅管理员可见，买家看不到这一栏）：</span>
+          <span class="tiny dim">预览会员视角</span>
           ${[0, 1, 2, 3].map((rank) => `<a class="btn btn-sm${wanted === rank ? ' btn-primary' : ''}" href="/v/${esc(id)}?as=${rank}" data-link>等级 ${rank}</a>`).join('')}
           ${wanted === null ? '' : `<a class="btn btn-sm" href="/v/${esc(id)}" data-link>恢复管理员视图</a>`}
         </div>
-        ${wanted === null ? '<p class="tiny dim">你现在是管理员身份，任何视频都会给完整版；要检查等级限制是否生效，点上面某个等级。</p>' : `<p class="tiny" style="color:var(--warn)">正在按等级 ${wanted} 模拟观看。这一页你看到什么，对应等级的买家就看到什么；你自己的账号权限没有变。</p>`}
+        ${wanted === null ? '<p class="tiny dim">当前为管理员视角，可观看全部视频。</p>' : `<p class="tiny" style="color:var(--warn)">正在按等级 ${wanted} 模拟观看。关闭预览可返回管理员视角。</p>`}
       </div>` : ''}
     </div><aside class="series-player-sidebar" aria-label="分集导航" hidden></aside></div>`;
 
@@ -265,7 +258,7 @@ export async function mountPlayer(view, { id, isCurrent = () => view.isConnected
       toast(error?.message ?? '重新取还是没成功。', 'bad');
     } finally {
       button.disabled = false;
-      button.textContent = '重新取一次';
+      button.textContent = '重新加载';
     }
   });
 

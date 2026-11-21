@@ -2,10 +2,17 @@ import { createCipher, CHUNK_SIZE, chunkCount } from './vendor/video-crypto.mjs'
 import { createChunkUpload } from './upload-engine.mjs';
 
 const text = (value) => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-const bytes = n => `${(Number(n) / 1048576).toFixed(1)} MiB`;
-const mimeOf = file => file.type || ({ mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm' })[file.name.split('.').pop().toLowerCase()] || '';
+const bytes = n => n < 1024 ? n + ' B' : n < 1048576 ? Math.round(n / 1024) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
+export const uploadMime = file => file.type || ({ mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm' })[file.name.split('.').pop().toLowerCase()] || '';
 
-export function mountUploadQueue(host, { post, plans, defaultPreview, maxBytes, probeDuration, probeFaststart, captureCover,
+export function fileProblem(file, maxBytes) {
+  if (!file.size) return '文件是空的，请重新选择。';
+  if (file.size > maxBytes) return '文件超过 ' + bytes(maxBytes) + '，请选择较小的文件。';
+  if (!['video/mp4', 'video/webm', 'video/quicktime'].includes(uploadMime(file))) return '请选择 MP4、MOV 或 WebM 视频。';
+  return '';
+}
+
+export function mountUploadQueue(host, { post, tierOptions, defaultPreview, maxBytes, probeDuration, probeFaststart, captureCover,
   uploadCover, serverCovers = false, isWriteOutcomeUnknown, onChanged = () => {}, onPickCover = () => {}, onWatchProgress = () => {} }) {
   const jobs = [];
   let active = 0;
@@ -13,27 +20,22 @@ export function mountUploadQueue(host, { post, plans, defaultPreview, maxBytes, 
   let disposed = false;
   let preparing = 0;
   let batchSettings = null;
-  const tiers = [...new Set([0, 1, ...plans.map(plan => Number(plan.tier_rank))])]
-    .filter(rank => Number.isSafeInteger(rank) && rank >= 0 && rank <= 99).sort((a,b) => a-b);
-  host.innerHTML = `<details class="panel stack" id="batch-upload" open><summary>批量上传多个视频</summary>
-    <p class="tiny dim">可一次选择最多 20 个文件，同时处理两条视频，合计最多三路数据块上传。每条视频独立加密并保存为草稿。</p>
-    <p class="tiny dim">某条失败时点它自己的「重试这一条」，会从断掉的那一块接着传，不用重传整片。别刷新页面：刷新后这一批就没了，重新选同一个文件会另起一条草稿，旧的那条要到教学影像管理里删。</p>
-    <label class="field">选择视频<input class="input" type="file" data-batch-files multiple accept="video/mp4,video/webm,video/quicktime,.mp4,.mov,.webm"></label>
-    <div class="row" style="gap:12px;flex-wrap:wrap">
+  host.innerHTML = `<section class="panel stack" id="batch-upload" aria-label="批量上传">
+    <p class="dim">一次最多选 20 个视频，每次上传两条。上传期间请保持页面打开。</p>
+    <label class="drop upload-batch-picker">选择多个视频<input aria-label="选择多个视频" type="file" data-batch-files multiple accept="video/mp4,video/webm,video/quicktime,.mp4,.mov,.webm"></label>
+    <fieldset class="upload-defaults"><legend>本批视频共用设置</legend><div class="row" style="gap:12px;flex-wrap:wrap">
       <label class="field">分类<select class="input" data-batch-kind><option value="live">真实拳击</option><option value="anime">动画拳击</option></select></label>
-      <label class="field">会员等级<select class="input" data-batch-tier>${tiers.map(rank => `<option value="${rank}" ${rank === 1 ? 'selected' : ''}>${rank === 0 ? '公开观看' : `等级 ${rank}`}</option>`).join('')}</select></label>
+      <label class="field">会员等级<select class="input" data-batch-tier>${tierOptions}</select></label>
       <label class="field">试看秒数<input class="input" type="number" min="0" max="3600" data-batch-preview value="${Number(defaultPreview) || 0}"></label>
-    </div>
-    <div data-batch-list class="stack"></div>
+    </div></fieldset>
     <p data-batch-summary aria-live="polite">尚未选择文件。</p>
     <div class="row"><button class="btn btn-primary" type="button" data-batch-start disabled>开始批量上传</button>
     <button class="btn" type="button" data-batch-pause aria-pressed="false" disabled>暂停排队</button>
     <button class="btn btn-ghost" type="button" data-batch-clear disabled>清空已结束的任务</button></div>
-    <p class="tiny dim">暂停排队只停止启动下一条，正在上传的条目会继续完成；继续排队后再启动剩余条目。</p>
-    <p class="tiny dim">${serverCovers
-      ? '每条可选一张封面图片；不选时尝试自动取帧。传完后也可从服务器提取的画面中选择，不用重传。'
-      : '每条可选一张封面图片；不选时尝试自动取帧。没取到可在教学影像管理补图，不用重传。'}</p>
-  </details>`;
+    <p class="tiny dim" data-pause-hint hidden>已暂停排队，正在上传的视频会继续传完。</p>
+    <p class="tiny" role="status" data-batch-limit></p>
+    <div data-batch-list class="stack"></div>
+  </section>`;
   const list = host.querySelector('[data-batch-list]');
   const summary = host.querySelector('[data-batch-summary]');
   const start = host.querySelector('[data-batch-start]');
@@ -41,7 +43,7 @@ export function mountUploadQueue(host, { post, plans, defaultPreview, maxBytes, 
   const pause = host.querySelector('[data-batch-pause]');
   const picker = host.querySelector('[data-batch-files]');
   const live = () => !disposed && host.isConnected;
-  const labels = { probing: '读取文件信息', ready: '等待上传', queued: '排队中', starting: '正在建档', uploading: '加密并上传', sealing: '校验登记', done: '已保存草稿', failed: '上传未完成', cancelling: '正在中止', cancelled: '已中止', uncertain: '结果待核对' };
+  const labels = { probing: '读取文件信息', ready: '等待上传', queued: '排队中', starting: '准备上传', uploading: '上传中', sealing: '保存草稿中', done: '已保存草稿', failed: '上传未完成', cancelling: '正在中止', cancelled: '已中止', uncertain: '结果待核对' };
   const busy = job => ['queued', 'starting', 'uploading', 'sealing', 'cancelling'].includes(job.state);
   function render(job) {
     if (!live() || !job.row.isConnected) return;
@@ -53,8 +55,8 @@ export function mountUploadQueue(host, { post, plans, defaultPreview, maxBytes, 
     // 只由「视频与封面处理」那一栏报数，这一行给入口，不在这里抄第二份进度。
     const finished = job.state === 'done';
     if (finished || job.state === 'cancelled') job.row.querySelector('[data-cover-file]').value = '';
-    job.row.querySelector('[data-progress]').hidden = finished;
-    job.row.querySelector('[data-meter]').hidden = finished;
+    job.row.querySelector('[data-progress]').hidden = !['uploading', 'sealing'].includes(job.state);
+    job.row.querySelector('[data-meter]').hidden = finished || !job.meter;
     const after = job.row.querySelector('[data-after]');
     after.hidden = !(finished && serverCovers);
     if (finished && serverCovers && !after.dataset.built) {
@@ -81,12 +83,20 @@ export function mountUploadQueue(host, { post, plans, defaultPreview, maxBytes, 
   }
   function updateControls() {
     const queued = jobs.filter(job => job.state === 'queued').length;
-    summary.textContent = jobs.length ? `${jobs.length} 条 · ${jobs.filter(j => j.state === 'done').length} 条已保存草稿 · ${active} 条处理中 · ${queued} 条排队${paused ? ' · 排队已暂停' : ''}` : '尚未选择文件。';
+    const saved = jobs.filter(job => job.state === 'done').length;
+    summary.textContent = jobs.length ? [
+      `共 ${jobs.length} 条`, active && `${active} 条上传中`, queued && `${queued} 条排队`, saved && `${saved} 条已存草稿`,
+    ].filter(Boolean).join(' · ') : '';
+    host.querySelector('.upload-defaults').hidden = !jobs.length;
+    start.hidden = !jobs.length;
+    host.querySelector('[data-pause-hint]').hidden = !paused;
+    pause.hidden = !paused && !jobs.some(job => busy(job) || job.enqueueWhenReady);
     pause.disabled = !paused && !jobs.some(job => busy(job) || job.enqueueWhenReady);
     pause.textContent = paused ? '继续排队' : '暂停排队';
     pause.setAttribute('aria-pressed', String(paused));
     start.textContent = paused ? '加入等待队列' : '开始批量上传';
     start.disabled = !jobs.some(j => j.state === 'ready' || (j.state === 'probing' && !j.enqueueWhenReady));
+    clear.hidden = !jobs.some(j => ['done', 'cancelled'].includes(j.state));
     clear.disabled = !jobs.some(j => ['done', 'cancelled'].includes(j.state));
     for (const input of host.querySelectorAll('[data-batch-kind],[data-batch-tier],[data-batch-preview]')) input.disabled = active > 0;
   }
@@ -108,7 +118,7 @@ export function mountUploadQueue(host, { post, plans, defaultPreview, maxBytes, 
       if (!job.session) {
         // 建档和登记是不可盲重发的写操作。保留响应，取消后拿到 videoId 才能清理。
         const session = await post('admin-upload-start', { ...job.settings, title: job.title.value.trim(),
-          durationSeconds: Number(job.duration.value), plainSize: job.file.size, contentType: mimeOf(job.file) });
+          durationSeconds: Number(job.duration.value), plainSize: job.file.size, contentType: uploadMime(job.file) });
         job.session = session;
         job.cipher = createCipher(session.chunkSize || CHUNK_SIZE);
         job.engine = createChunkUpload({ file: job.file, cipher: job.cipher, videoId: session.videoId,
@@ -132,15 +142,15 @@ export function mountUploadQueue(host, { post, plans, defaultPreview, maxBytes, 
             const shot = job.coverFile ? { blob: job.coverFile } : await captureCover(job.file, Number(job.duration.value), coverController.signal);
             if (signal.aborted) return;
             if (shot.blob) { writing = true; await uploadCover(job.session.videoId, shot.blob, coverController.signal); job.coverState = 'confirmed'; job.coverNote = ''; }
-            else { job.coverState = 'failed'; job.coverNote = serverCovers ? '浏览器未生成预览，服务器将提取候选帧，可从上传页处理状态中选封面。' : '未取到封面，请在教学影像管理补图。'; }
+            else { job.coverState = 'failed'; job.coverNote = serverCovers ? '浏览器未生成预览，服务器将提取候选帧，可在「视频与封面处理」中选择。' : '未取到封面，请在视频管理补图。'; }
           } catch (error) {
             const status = Number(error?.status || /HTTP (\d{3})/.exec(String(error?.message))?.[1] || 0);
             const rejected = status >= 400 && status < 500 && status !== 408 && status !== 429 && !isWriteOutcomeUnknown(error);
             const uncertain = coverController.signal.aborted || isWriteOutcomeUnknown(error) || (writing && !rejected);
             job.coverState = uncertain ? 'uncertain' : 'failed';
             job.coverNote = uncertain
-              ? '封面保存结果未确认，请到教学影像管理核对。'
-              : `封面未确认：${message(error)}。${serverCovers ? '稍后可从服务器候选画面中选择。' : '请在教学影像管理补图。'}`;
+              ? '封面保存结果未确认，请到视频管理核对。'
+              : `封面未确认：${message(error)}。${serverCovers ? '稍后可从服务器候选画面中选择。' : '请在视频管理补图。'}`;
           } finally { clearTimeout(deadline); }
         })();
       }
@@ -162,7 +172,7 @@ export function mountUploadQueue(host, { post, plans, defaultPreview, maxBytes, 
         catch (cleanup) { job.state = 'failed'; job.cancelPending = true; job.note = `已停止传输，清理未确认：${message(cleanup)}`; }
       } else {
         job.state = isWriteOutcomeUnknown(error) ? 'uncertain' : 'failed';
-        job.note = message(error) + (job.state === 'uncertain' ? ' 请先到教学影像管理核对，避免重复建档。' : ' 其他视频会继续上传。别刷新页面，直接点「重试这一条」就从断掉的那一块接着传；刷新后重新选文件会另起一条草稿，这一条要到教学影像管理里删。');
+        job.note = message(error) + (job.state === 'uncertain' ? ' 请先到视频管理核对，避免重复建档。' : ' 其他视频会继续上传。请保持页面打开，点击本条的重试按钮。');
       }
     } finally {
       coverController.abort(); signal.removeEventListener('abort', cancelCover);
@@ -180,7 +190,7 @@ export function mountUploadQueue(host, { post, plans, defaultPreview, maxBytes, 
     tierRank: Number(host.querySelector('[data-batch-tier]').value), previewSeconds: Number(host.querySelector('[data-batch-preview]').value) });
   function enqueue(job) {
     const seconds = Number(job.duration.value);
-    if (!job.title.value.trim() || !Number.isSafeInteger(seconds) || seconds <= 0 || seconds > 86400) { job.pendingSettings = null; job.note = '请填写标题和有效时长（1–86400 秒），再点开始。'; render(job); return; }
+    if (!job.title.value.trim() || !Number.isSafeInteger(seconds) || seconds <= 0 || seconds > 86400) { job.row.querySelector('[data-job-fields]').open = true; job.pendingSettings = null; job.note = '请填写标题和有效时长（1–86400 秒），再点开始。'; render(job); return; }
     job.settings = { ...(job.pendingSettings || batchSettings || settings()) }; job.pendingSettings = null; job.enqueueWhenReady = false; job.state = 'queued'; render(job);
   }
   function probeNext() {
@@ -196,8 +206,8 @@ export function mountUploadQueue(host, { post, plans, defaultPreview, maxBytes, 
           if (!job.duration.value && seconds) job.duration.value = seconds;
           job.faststart = await probeFaststart(job.file);
           if (job.state !== 'probing' || !live()) return;
-          job.note = job.faststart === false ? 'moov 在文件末尾，建议导出 faststart 后上传。' : '';
-          if (!seconds) job.note += ' 浏览器未读出时长，请手工填写秒数。';
+          job.note = job.faststart === false ? '这个视频可能无法立即试看，建议导出时启用「网页优化」。' : '';
+          if (!job.duration.value) { job.row.querySelector('[data-job-fields]').open = true; job.note += ' 请填写视频时长（秒）。'; }
           job.state = 'ready';
         } catch (error) { if (job.state === 'probing') { job.state = 'ready'; job.note = message(error); } }
         finally {
@@ -208,16 +218,18 @@ export function mountUploadQueue(host, { post, plans, defaultPreview, maxBytes, 
       })();
     }
   }
+  updateControls();
   picker.addEventListener('change', () => {
-    host.querySelector('details').open = true;
+    let skipped = 0;
     for (const file of picker.files) {
-      if (jobs.length >= 20) { summary.textContent = '一批最多保留 20 条，请先清空已结束的任务。'; break; }
+      if (jobs.length >= 20) { skipped++; continue; }
       const job = { file, state: 'probing', probeController: new AbortController(), session: null, engine: null, note: '', percent: 0 };
       const row = document.createElement('article'); row.className = 'panel stack';
       row.innerHTML = `<strong>${text(file.name)} · ${bytes(file.size)}</strong>
+        <details data-job-fields><summary>编辑标题、时长或封面</summary>
         <label class="field">标题<input class="input" data-title maxlength="120" value="${text(file.name.replace(/\.[^.]+$/, '').slice(0,120))}"></label>
         <label class="field">时长（秒）<input class="input" data-duration type="number" min="1" max="86400"></label>
-        <label class="field">封面（选填，JPG / PNG / WebP，最多 2 MB）<input class="input" type="file" data-cover-file accept="image/jpeg,image/png,image/webp"></label>
+        <label class="field">封面（选填，JPG / PNG / WebP，最多 2 MB）<input class="input" type="file" data-cover-file accept="image/jpeg,image/png,image/webp"></label></details>
         <p data-status aria-live="polite"></p><progress data-progress max="100" value="0" style="width:100%"></progress>
         <p data-meter class="tiny dim"></p><p data-note class="tiny"></p>
         <div class="row" data-after style="gap:6px" hidden></div>
@@ -232,8 +244,9 @@ export function mountUploadQueue(host, { post, plans, defaultPreview, maxBytes, 
         render(job);
       });
       list.append(row); jobs.push(job);
-      if (!file.size || file.size > maxBytes || !['video/mp4','video/webm','video/quicktime'].includes(mimeOf(file))) {
-        job.state = 'cancelled'; job.file = null; job.note = '文件类型不支持，或超过单个文件大小限制。';
+      const problem = fileProblem(file, maxBytes);
+      if (problem) {
+        job.state = 'cancelled'; job.file = null; job.note = problem;
       }
       row.querySelector('[data-retry]').addEventListener('click', async () => {
         if (job.state !== 'failed') return;
@@ -256,6 +269,7 @@ export function mountUploadQueue(host, { post, plans, defaultPreview, maxBytes, 
       });
       render(job);
     }
+    host.querySelector('[data-batch-limit]').textContent = skipped ? '有 ' + skipped + ' 个文件未加入。请先清空已结束的任务，再选择这些文件。' : '';
     picker.value = ''; probeNext();
   });
   start.addEventListener('click', () => {

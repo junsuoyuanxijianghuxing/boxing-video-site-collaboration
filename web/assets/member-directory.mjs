@@ -65,6 +65,7 @@ function memberCard(row, openId, viewerId) {
     email = esc(user.email);
   const number = String(user.id).replace(/-/g, '').slice(0, 8).toUpperCase();
   const name = user.displayName || user.email;
+  const initial = Array.from(name.trim())[0] || '人';
   const status = row.membership
     ? `${esc(row.membership.rank)} 级会员`
     : esc(stateNames.get(row.memberState) || '无有效权益');
@@ -76,11 +77,11 @@ function memberCard(row, openId, viewerId) {
       ? `${fmtDate(row.expiredAt)} 已到期`
       : '';
   return `<article class="member-card" data-account-id="${id}">
-    <header><div><strong>${esc(name)}</strong> <span class="member-number">#${esc(number)}</span>
-      ${row.isOwner ? '<span class="pill">管理员</span>' : ''}<div class="member-email">${email}</div></div>
+    <header><div class="member-identity"><span class="member-avatar" aria-hidden="true">${esc(initial.toLocaleUpperCase())}</span><div><strong>${esc(name)}</strong>
+      ${row.isOwner ? '<span class="pill">管理员</span>' : ''}${user.displayName && user.displayName !== user.email ? `<div class="member-email">${email}</div>` : ''}<div class="member-number">会员编号 ${esc(number)}</div></div></div>
       <div class="member-badges"><span class="pill ${row.disabledAt ? 'pill-bad' : ''}">${row.disabledAt ? '已停用' : '可登录'}</span>
         <span class="pill${row.membership ? ' pill-good' : ''}">${status}</span>${row.expiring ? '<span class="pill pill-warn">7 天内到期</span>' : ''}</div></header>
-    <p class="member-note" data-account-note="${id}">${esc(row.note || '暂无备注')}${row.contactQq ? ' · QQ ' + esc(row.contactQq) : ''}</p>
+    <p class="member-note" data-account-note="${id}">${esc(row.note || '')}${row.contactQq ? (row.note ? ' · QQ ' : 'QQ ') + esc(row.contactQq) : ''}</p>
     ${expiry ? `<p class="member-dates">${esc(expiry)}</p>` : ''}
     <div class="member-actions"><button type="button" class="btn btn-sm btn-primary" data-edit-entitlement aria-expanded="false" aria-controls="member-editor-${id}">调整等级和时长</button>
       <button type="button" class="btn btn-sm" data-copy-email="${email}">复制邮箱</button>
@@ -98,7 +99,7 @@ function memberCard(row, openId, viewerId) {
       <div class="member-actions"><button class="btn btn-sm btn-primary" type="submit">保存会员调整</button><button class="btn btn-sm" type="button" data-cancel-entitlement>取消</button></div>
       <p role="status" class="tiny" data-editor-status></p>
     </form>
-    <details class="member-details"${openId === user.id ? ' open' : ''}><summary>权益与账号操作</summary>
+    <details class="member-details"${openId === user.id ? ' open' : ''}><summary>卡片记录与账号设置</summary>
       <p class="member-dates">注册 ${fmtDate(row.registeredAt)} · ${row.lastLoginAt ? '最近登录 ' + fmtDate(row.lastLoginAt) : '从未登录'}</p>
       <div class="member-grants"><strong>原始卡片记录</strong>${row.grants.map(grant => grantMarkup(grant, email)).join('') || '<p class="tiny dim">没有卡片记录。</p>'}</div>
       ${row.revokedGrants ? `<button type="button" class="btn btn-sm btn-ghost" data-revoked-for="${email}">查看已撤销的 ${Number(row.revokedGrants)} 条权益</button>` : ''}

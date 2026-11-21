@@ -3,7 +3,6 @@ import { mountShellNav } from './shell-nav.js';
 import { lessonLibraryMarkup } from './lesson-layout.mjs';
 import { mountLibraryBrowser } from './library-browser.mjs';
 import { lessonCardMarkup, previewLabel } from './lesson-card.mjs';
-import { teachingCopy } from './teaching-copy.mjs';
 import { isWatchedToEnd } from './play-progress.mjs';
 import { setPosterSrc } from './poster-cache.mjs';
 import { routeOf } from './route-state.mjs';
@@ -202,7 +201,7 @@ function renderNav() {
     if (settings.contact_qq) footQq.href = `https://wpa.qq.com/msgrd?v=3&uin=${encodeURIComponent(settings.contact_qq)}&site=qoder&menu=yes`;
   }
   const promo = document.getElementById('foot-promo');
-  if (promo && settings.promo_line) promo.textContent = teachingCopy(settings.promo_line);
+  if (promo && settings.promo_line) promo.textContent = settings.promo_line;
   // Prices live in the database, so the footer has to read them from there too.
   // Left as static text it would keep advertising the old price after a change in
   // 后台 — the same drift the page title had.
@@ -355,8 +354,8 @@ async function render() {
 export async function libraryView(view) {
   const boot = state.boot;
   view.innerHTML = lessonLibraryMarkup({
-    promo: esc(teachingCopy(boot.settings.promo_line || '')),
-    purchaseSteps: esc(teachingCopy(boot.settings.purchase_steps || DEFAULT_PURCHASE_STEPS)),
+    promo: esc(boot.settings.promo_line || ''),
+    purchaseSteps: esc(boot.settings.purchase_steps || DEFAULT_PURCHASE_STEPS),
   });
   const root = view.querySelector('.compact-library');
   let pages;
@@ -635,7 +634,7 @@ function authPanel(host, mode) {
       <form class="auth-card panel stack" id="auth-form" novalidate>
         <div class="section-title">
           <h2>注册或登录</h2>
-          <p class="tiny dim">注册免费，可先看所有教学影像的试看内容；激活码要绑在账号上，所以先有账号。</p>
+          <p class="tiny dim">注册后可兑换会员激活码，观看记录会保存在这个账号下。</p>
         </div>
         ${ended ? `<div class="note note-warn">${esc(ended)}</div>` : ''}
         <div class="row" style="gap:6px" role="group" aria-label="注册还是登录">

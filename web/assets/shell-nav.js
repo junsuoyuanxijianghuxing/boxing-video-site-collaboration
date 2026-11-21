@@ -3,8 +3,8 @@
 // 免得改了后台标签，菜单里还留着旧的。
 
 export const ADMIN_TABS = [
-  ['upload', '上传教学影像', '传视频 加密 数据块 封面'],
-  ['videos', '教学影像管理', '视频 上架 下架 改等级 试看秒数 删除'],
+  ['upload', '上传视频', '传视频 加密 数据块 封面'],
+  ['videos', '视频管理', '视频 上架 下架 改等级 试看秒数 删除'],
   ['keys', '激活码', '出码 作废 导出 未兑换 已兑换 已冻结'],
   ['members', '用户管理', '会员名单 昵称 买家 QQ 账号 邮箱 撤销 到期 加减天数 看过的教学影像 备注 重置密码 停用 还没绑码的'],
   ['behavior', '用户行为', '谁在看 看了哪几条 看到哪儿 画质 流畅 高清 自动 拖片 整片 下载 并发 网段 阈值 仪表盘'],
@@ -90,7 +90,7 @@ let shellTeardown = null;
 
 // 弧形菜单的入口也住在这份清单里：以前 app.js 另抄了一份标签名，改了后台标签那边不会跟着变。
 export const ARC_ITEMS = {
-  adminHere: [['上传教学影像', '/admin#upload'], ['激活码', '/admin#keys'], ['用户管理', '/admin#members'], ['操作日志', '/admin#audit']],
+  adminHere: [['上传视频', '/admin#upload'], ['激活码', '/admin#keys'], ['用户管理', '/admin#members'], ['操作日志', '/admin#audit']],
   adminElse: [['后台', '/admin'], ['教学影像', '/library'], ['会员与购买', '/pricing'], ['我的账号', '/account']],
   viewer: [['教学影像', '/library'], ['会员与购买', '/pricing'], ['我的账号', '/account']],
   guest: [['教学影像', '/library'], ['会员与购买', '/pricing'], ['注册观看账号', '/register'], ['登录', '/login']],
