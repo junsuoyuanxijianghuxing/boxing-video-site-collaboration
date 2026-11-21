@@ -3480,6 +3480,13 @@ body:has(.liquid-library) {
 @media (prefers-reduced-motion: reduce) {
   .screening-card, .screening-card *, .admin-task-group a, .member-editor, .library-section { transition: none !important; animation: none !important; transform: none; }
 }
+
+.liquid-library .library-search-row .library-advanced > summary { white-space: nowrap; gap: 4px; padding-inline: 9px; }
+@media (max-width: 620px) {
+  .watch-screen .stage:has(> .paywall:not([hidden])) > video { display: none; }
+  .watch-screen .stage > .paywall:not([hidden]) { position: relative; min-height: 190px; padding: 12px; }
+  .watch-screen .paywall > div { width: 100%; padding: 14px; gap: 8px; }
+}
 </style>
     <script data-inline="assets/frame-guard.js">// nginx 这一层已经用响应头发了 frame-ancestors 'none'；<meta> CSP 表达不了这条指令
 // （浏览器会直接忽略并报警），所以这里留一层自己的兜底：被别的页面套进框架时抢回顶层窗口，
