@@ -1330,6 +1330,66 @@ textarea.input {
   margin-top: 6px;
 }
 
+/* 视频名称是管理时的主要识别信息，不能被其他八列控件挤成窄输入框。 */
+.admin > #tab-body,
+[data-video-management],
+[data-video-management] .table-wrap {
+  min-width: 0;
+}
+[data-video-management] .admin-video-table {
+  min-width: 1320px;
+}
+[data-video-management] .video-name-cell {
+  min-width: 300px;
+  width: 28%;
+}
+[data-video-management] .video-name-editor {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+[data-video-management] .video-name-heading {
+  display: block;
+  color: var(--ink);
+  font-size: 17px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+[data-video-management] .video-name-editor .input {
+  min-width: 0;
+  color: var(--ink);
+  font: inherit;
+  font-size: 16px;
+  line-height: 1.6;
+}
+[data-video-management] textarea[data-title] {
+  min-height: 100px;
+  resize: vertical;
+}
+@media (max-width: 860px) {
+  [data-video-management] .admin-video-table {
+    display: block;
+    min-width: 0;
+  }
+  [data-video-management] .admin-video-table tbody {
+    display: block;
+  }
+  [data-video-management] .admin-video-table .video-name-cell {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    padding-block: 12px;
+  }
+  [data-video-management] .video-name-cell::before {
+    display: block;
+    margin-bottom: 8px;
+  }
+  [data-video-management] .video-name-heading {
+    font-size: 18px;
+  }
+}
+
 /* 自动取帧失败那句话是唯一告诉他"下一步点哪里"的地方，混在一片 dim 小字里等于没说。 */
 #u-cover-note.is-bad {
   color: var(--warn);
@@ -3047,67 +3107,6 @@ body:has(.liquid-library) {
   .case-list .case-act { order: 3; grid-column: 1; grid-row: auto; }
 }
 
-/* 视频名称是管理时的主要识别信息，不能被其他八列控件挤成窄输入框。 */
-.admin > #tab-body,
-[data-video-management],
-[data-video-management] .table-wrap {
-  min-width: 0;
-}
-[data-video-management] .admin-video-table {
-  min-width: 1320px;
-}
-[data-video-management] .video-name-cell {
-  min-width: 300px;
-  width: 28%;
-}
-[data-video-management] .video-name-editor {
-  display: grid;
-  gap: 12px;
-  min-width: 0;
-}
-[data-video-management] .video-name-heading {
-  display: block;
-  color: var(--ink);
-  font-size: 17px;
-  line-height: 1.55;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-}
-[data-video-management] .video-name-editor .input {
-  min-width: 0;
-  color: var(--ink);
-  font: inherit;
-  font-size: 16px;
-  line-height: 1.6;
-}
-[data-video-management] textarea[data-title] {
-  min-height: 100px;
-  resize: vertical;
-}
-@media (max-width: 860px) {
-  [data-video-management] .admin-video-table {
-    display: block;
-    min-width: 0;
-  }
-  [data-video-management] .admin-video-table tbody {
-    display: block;
-  }
-  [data-video-management] .admin-video-table .video-name-cell {
-    display: block;
-    width: 100%;
-    min-width: 0;
-    padding-block: 12px;
-  }
-  [data-video-management] .video-name-cell::before {
-    display: block;
-    margin-bottom: 8px;
-  }
-  [data-video-management] .video-name-heading {
-    font-size: 18px;
-  }
-}
-
-
 /* Admin Compact Workspace 20261023: preserve record nodes, disclose editing on demand. */
 .admin.admin-compact-workspace { max-width: 1280px; min-width: 0; }
 .admin-compact-workspace > .spread .section-title h1 { font-size: clamp(28px, 3vw, 38px); line-height: 1.25; }
@@ -3235,6 +3234,7 @@ body:has(.liquid-library) {
   .admin-compact-workspace .order-preview-device[data-device='desktop'] :is(.card-facts, .card-eyeline, .card-footer, .card-play, .issue) { display: none; }
 }
 /* End Admin Compact Workspace 20261023. */
+
 /* Catalog Toolbar Refinement 20261025: grouped filters, reachable actions and compact mobile cards. */
 .liquid-library.library-toolbar-ready .library-browse-bar:has(.library-advanced[open]) { z-index: 35; }
 .liquid-library.library-toolbar-ready .library-advanced-panel {
@@ -3389,6 +3389,97 @@ body:has(.liquid-library) {
 .member-editor .member-actions, .member-editor p { grid-column: 1 / -1; }
 .member-editor [data-editor-status]:empty { display: none; }
 #admin-upload-pane[hidden], #tab-body[hidden], .member-editor[hidden], .member-editor [hidden] { display: none; }
+
+.upload-heading { display: grid; gap: 10px; margin-bottom: 16px; }
+.upload-heading h2, .upload-heading p { margin: 0; }
+.upload-fields, .upload-defaults { min-width: 0; border: 0; margin: 0; padding: 0; }
+.upload-fields legend, .upload-defaults legend { padding: 0 0 10px; font-weight: 600; }
+.upload-cover-settings summary { cursor: pointer; padding: 10px 0; }
+#single-upload .drop:focus-within { outline: 2px solid var(--accent); outline-offset: 3px; }
+#admin-upload-pane [hidden] { display: none !important; }
+#admin-upload-pane [data-batch-limit]:empty, #probe:empty, #u-ratio-note:empty { display: none; }
+#admin-upload-pane .drop, #batch-upload article { overflow-wrap: anywhere; }
+.upload-defaults .field { flex: 1 1 10rem; min-width: 0; }
+#single-upload, #batch-upload, #processing-status-host { margin-bottom: 16px; }
+
+#single-upload .drop, .upload-batch-picker { position: relative; }
+#single-upload #file, .upload-batch-picker input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.upload-batch-picker:focus-within { outline: 2px solid var(--accent); }
+#upload-processing > summary, [data-job-fields] > summary { cursor: pointer; padding: 9px 0; }
+[data-job-fields] .field { margin-top: 10px; }
+
+/* User directory and workspace navigation */
+.admin-desk .admin-mobile-nav { display: none; }
+.admin-desk .member-directory { background: var(--paper-2); border-color: var(--rule); border-radius: 14px; }
+.admin-desk .member-filters { background: var(--paper); border: 1px solid var(--rule); border-radius: 10px; padding: clamp(12px, 2vw, 20px); }
+.admin-desk .member-card { padding: clamp(14px, 2vw, 22px); border-color: var(--rule); background: var(--paper); }
+.member-identity { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.member-identity > div { min-width: 0; }
+.member-avatar { display: grid; place-items: center; width: 40px; height: 44px; flex: none; color: var(--accent); background: var(--accent-soft); border-radius: 10px; font: 700 19px var(--display); }
+.member-identity .member-number { margin-top: 4px; letter-spacing: .035em; }
+.member-note:empty { display: none; }
+.member-directory #m-query-status { margin-block: 5px 0; font-variant-numeric: tabular-nums; }
+.member-directory .section-title h2 { margin: 0; }
+.member-card:focus-within { border-color: var(--accent); }
+.admin-task-group a { position: relative; }
+@media (min-width: 1150px) {
+  .admin-desk.wrap { display: grid; grid-template-columns: 158px minmax(0, 1fr); grid-template-areas: "heading heading" "menu crumbs" "menu tools" "menu panes"; gap: 10px 32px; align-items: start; }
+  .admin-desk > .spread { grid-area: heading; }
+  .admin-desk #admin-crumbs { grid-area: crumbs; }
+  .admin-desk .admin-pair-tools { grid-area: tools; margin: 0; }
+  .admin-desk #admin-panes { grid-area: panes; }
+  .admin-desk .admin-task-nav { grid-area: menu; display: grid; border: 0; border-right: 1px solid var(--rule); padding: 4px 16px 10px 0; gap: 18px; }
+  .admin-desk .admin-task-group > div { display: grid; gap: 2px; }
+  .admin-desk .admin-task-group > span { padding-inline: 10px; }
+  .admin-desk .admin-task-group a[aria-current="page"] { background: var(--accent-soft); color: var(--accent); box-shadow: inset 3px 0 var(--accent); }
+}
+@media (max-width: 760px) {
+  .admin-desk .admin-mobile-nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: .875rem; margin-bottom: 8px; }
+  .admin-mobile-nav select { width: auto; min-height: 44px; }
+  .admin-desk .admin-task-group:not(:first-child), .admin-desk .admin-task-group > span { display: none; }
+  .admin-desk .admin-task-group { display: block; }
+  .admin-desk .admin-task-nav { padding-block: 4px; }
+  .admin-desk .member-filter-actions { grid-column: 1 / -1; }
+  .member-identity { gap: 9px; }
+}
+
+/* Video cards keep the running time on the image in both catalog views. */
+.screening-card .poster { position: relative; }
+.screening-time { position: absolute; right: 8px; bottom: 8px; z-index: 2; padding: 3px 6px; border-radius: 4px; color: #fff; background: #12100eeb; font: 600 12px/1.35 var(--mono); font-variant-numeric: tabular-nums; }
+.screening-card .poster:has(.poster-code) { background: repeating-linear-gradient(153deg, transparent 0 22px, #ffe4ad12 23px 24px, transparent 25px 48px), linear-gradient(110deg, #4a3123, #201e1d); }
+.screening-card[data-kind-style="anime"] .poster:has(.poster-code) { background: repeating-linear-gradient(153deg, transparent 0 22px, #dcb9ff12 23px 24px, transparent 25px 48px), linear-gradient(110deg, #3d3042, #211d26); }
+.screening-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 9px; color: var(--muted); font-size: .82rem; }
+.screening-access { color: #f3cb89; }
+.screening-access.is-full { color: #97d9bc; }
+.screening-tier { margin: 0; color: var(--muted); font-size: .8rem; }
+.liquid-library #kind-list .grid:not(.lesson-list) > .screening-card.lesson-card { background: #211c18; border-color: var(--rule); }
+.liquid-library.library-toolbar-ready #kind-list .grid:not(.lesson-list) > .screening-card .card-text { min-height: 0; padding: 14px 16px 18px; gap: 6px; }
+.liquid-library.library-toolbar-ready #kind-list .grid:not(.lesson-list) > .screening-card .card-text h3 { min-height: 0; }
+.liquid-library #kind-list .grid:not(.lesson-list) > .screening-card .card-text .desc { min-height: 0; margin: 2px 0 0; }
+.liquid-library #kind-list .lesson-list .screening-card .card-text { display: flex; flex-direction: column; justify-content: center; gap: 5px; }
+.liquid-library .library-section:focus-visible, .screening-card:focus-visible, .watch-back:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+@media (min-width: 1000px) {
+  .liquid-library #kind-list .grid:not(.lesson-list) { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
+}
+
+/* Playback */
+.watch-back { width: fit-content; display: inline-flex; align-items: center; gap: 8px; min-height: 44px; color: var(--ink-2); text-decoration: none; }
+.watch-back span { color: var(--accent); }
+.watch-screen { min-width: 0; padding: 3px; border: 1px solid var(--rule-2); border-radius: 14px; background: #0c0a09; overflow: hidden; }
+.watch-screen .stage { border-radius: 10px; border: 0; }
+.watch-screen .progress-line { margin: 3px 4px 0; }
+.watch-heading { padding: 0 0 14px; border-bottom: 1px solid var(--rule); }
+.watch-heading h1 { margin: 8px 0 0; font: 600 clamp(1.45rem, 3vw, 2.4rem)/1.35 var(--serif); overflow-wrap: anywhere; }
+.watch-context { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 12px; color: var(--muted); font-size: .875rem; font-variant-numeric: tabular-nums; }
+.watch-context > :first-child { color: var(--accent); background: var(--accent-soft); border-radius: 4px; padding: 3px 8px; }
+@media (prefers-reduced-motion: no-preference) {
+  .admin-task-group a, .member-card, .library-section { transition: background-color 160ms ease-out, border-color 160ms ease-out, color 160ms ease-out; }
+  .member-editor:not([hidden]) { animation: member-editor-enter 150ms ease-out; }
+  @keyframes member-editor-enter { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+}
+@media (prefers-reduced-motion: reduce) {
+  .screening-card, .screening-card *, .admin-task-group a, .member-editor, .library-section { transition: none !important; animation: none !important; transform: none; }
+}
 </style>
     <script data-inline="assets/frame-guard.js">// nginx 这一层已经用响应头发了 frame-ancestors 'none'；<meta> CSP 表达不了这条指令
 // （浏览器会直接忽略并报警），所以这里留一层自己的兜底：被别的页面套进框架时抢回顶层窗口，
