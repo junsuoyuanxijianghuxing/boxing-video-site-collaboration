@@ -136,22 +136,18 @@ export async function mountPlayer(view, { id, isCurrent = () => view.isConnected
 
   stage.addEventListener('contextmenu', (event) => event.preventDefault());
   document.getElementById('paywall-copy')?.addEventListener('click', async () => {
-    if (contactQq === '未配置') return toast('后台还没有填写购买 QQ，请先在 站点设置 里补上。', 'bad');
+    if (!contactQq) return;
     if (await copyText(contactQq)) toast(`QQ ${contactQq} 已复制。请发送教学影像名称和你的登录邮箱。`);
     else toast(`复制未完成。请长按上方的 QQ 号 ${contactQq} 手动复制，再发送教学影像名称和你的登录邮箱。`, 'bad');
   });
 
   let revealed = false;
-  function revealPaywall(reason) {
+  function revealPaywall() {
     if (revealed) return;
     revealed = true;
     reel.pause?.();
-    document.getElementById('paywall-title').textContent = reason === 'ended'
-      ? `试看到 ${fmtDuration(previewSeconds)} 结束（完整教学影像 ${fmtDuration(video.durationSeconds)}）`
-      : '试看部分到此为止';
-    document.getElementById('paywall-body').textContent = reason === 'ended'
-      ? `这条视频要求会员等级 ${video.tierRank}，你现在的等级不够，所以只能看前 ${fmtDuration(previewSeconds)}。绑定对应档位的激活码后可以看完整版本。`
-      : `免费试看只发放前 ${fmtDuration(previewSeconds)}，后面 ${fmtDuration(Math.max(0, (Number(video.durationSeconds) || 0) - previewSeconds))} 的数据不会发给这个账号。继续观看需要绑定激活码。`;
+    document.getElementById('paywall-title').textContent = '试看结束';
+    document.getElementById('paywall-body').textContent = `已看完前 ${fmtDuration(previewSeconds)}。观看全片需要 ${video.tierRank} 级或以上会员。`;
     paywall.hidden = false;
   }
 
@@ -169,11 +165,11 @@ export async function mountPlayer(view, { id, isCurrent = () => view.isConnected
     } else if (note && left <= 0) {
       note.hidden = true;
     }
-    if (reel.currentTime >= previewSeconds - 0.4) revealPaywall('ended');
+    if (reel.currentTime >= previewSeconds - 0.4) revealPaywall();
   });
 
   reel.addEventListener('ended', () => {
-    if (isPreview) revealPaywall('ended');
+    if (isPreview) revealPaywall();
   });
 
   // A truncated stream surfaces as a media error near the cut, not as a clean end.
@@ -210,11 +206,11 @@ export async function mountPlayer(view, { id, isCurrent = () => view.isConnected
     reel.pause?.();
   };
   reel.addEventListener('error', () => {
-    if (isPreview && previewSeconds > 0 && reel.currentTime >= previewSeconds - 0.4) { revealPaywall('ended'); return; }
+    if (isPreview && previewSeconds > 0 && reel.currentTime >= previewSeconds - 0.4) { revealPaywall(); return; }
     showRecovery();
   });
   reel.addEventListener('stalled', () => {
-    if (isPreview && previewSeconds > 0 && reel.currentTime >= previewSeconds - 0.4) revealPaywall('ended');
+    if (isPreview && previewSeconds > 0 && reel.currentTime >= previewSeconds - 0.4) revealPaywall();
   });
   document.getElementById('stage-error-copy')?.addEventListener('click', async () => {
     // 只复制页面路径及合集上下文，绝不复制媒体地址、播放令牌或其他查询参数。
