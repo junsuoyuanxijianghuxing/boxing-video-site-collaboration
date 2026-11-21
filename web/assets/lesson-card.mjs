@@ -16,10 +16,10 @@ export const membershipRequirement = (rank) => Number(rank) === 0 ? '公开观�
   : Number(rank) === 1 ? '任意档位会员' : `${Number(rank) || 1} 级及以上会员`;
 
 export function previewLabel(item) {
-  if (item.access === 'full') return '观看完整教学影像';
+  if (item.access === 'full') return '可看完整版';
   if (item.access !== 'preview' || !(Number(item.previewSeconds) > 0)) return '查看会员要求';
   const seconds = Math.round(Number(item.previewSeconds));
-  return `可试看约 ${seconds >= 60 ? `${Math.floor(seconds / 60)} 分${seconds % 60 ? ` ${seconds % 60} 秒` : '钟'}` : `${seconds} 秒`}`;
+  return `试看 ${seconds >= 60 ? `${Math.floor(seconds / 60)} 分${seconds % 60 ? ` ${seconds % 60} 秒` : '钟'}` : `${seconds} 秒`}`;
 }
 
 export function lessonCardMarkup(item, { posterUrl = '', number = null, watched = '', interactive = true, href = '', contextLabel = '' } = {}) {
@@ -28,25 +28,22 @@ export function lessonCardMarkup(item, { posterUrl = '', number = null, watched 
   const destination = href || `/v/${encodeURIComponent(item.id)}`;
   const target = interactive ? ` href="${e(destination)}" data-link` : '';
   const full = item.access === 'full';
-  const access = full ? '完整内容已解锁' : item.access === 'preview' ? '先试看，再选择会员' : '按会员等级解锁';
-  return `<${tag} class="card lesson-card"${target}>
+  const access = full ? (Number(item.tierRank) === 0 ? '公开' : '已解锁') : previewLabel(item);
+  return `<${tag} class="card lesson-card screening-card" data-kind-style="${item.kind === 'anime' ? 'anime' : 'live'}"${target}>
     <div class="poster">${item.hasPoster && posterUrl
     ? `<img data-poster="${e(posterUrl)}" alt="" decoding="async" width="1280" height="720">`
-    : `<span class="poster-code">${e(String(item.title ?? '').slice(0, 4))}</span>`}
+    : `<span class="poster-code" aria-hidden="true">${e(String(item.title ?? '').slice(0, 4))}</span>`}
       ${number ? `<span class="issue mono">#${e(number)}</span>` : ''}
+      ${Number(item.durationSeconds) > 0 ? `<span class="screening-time" aria-label="时长 ${durationClock(item.durationSeconds)}">${durationClock(item.durationSeconds)}</span>` : ''}
       <span class="card-play" aria-hidden="true"></span>
     </div>
     <div class="card-text">
       ${contextLabel ? `<p class="card-series-context">${e(contextLabel)}</p>` : ''}
-      <div class="card-eyeline"><span>${item.kind === 'anime' ? '动画拳击' : '真实拳击'}</span><span class="card-access${full ? ' is-unlocked' : ''}">${access}</span></div>
       <h3>${e(item.title)}</h3>
-      <div class="card-facts">
-        <div class="card-fact-duration"><span class="card-fact-label">${contextLabel ? '本集时长' : '教学影像时长'}</span><strong class="card-clock">${durationClock(item.durationSeconds)}</strong></div>
-        <div class="card-fact-tier"><span class="card-fact-label">完整观看</span><strong class="card-tier">${membershipRequirement(item.tierRank)}</strong></div>
-      </div>
+      <div class="screening-meta"><span>${item.kind === 'anime' ? '动画拳击' : '真实拳击'}</span><span class="screening-access${full ? ' is-full' : ''}">${e(access)}</span></div>
+      ${!full && Number(item.tierRank) > 0 ? `<p class="screening-tier">完整版 · ${membershipRequirement(item.tierRank)}</p>` : ''}
       ${watched}
       ${item.description ? `<p class="desc">${e(item.description)}</p>` : ''}
-      <div class="card-footer"><span class="card-preview-copy">${previewLabel(item)}</span><span class="card-open" aria-hidden="true">${full ? '进入观看' : item.access === 'preview' ? '打开试看' : '查看详情'} ↗</span></div>
     </div>
   </${tag}>`;
 }

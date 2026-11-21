@@ -4,11 +4,12 @@ import { esc, fmtBytes, fmtDate, fmtDuration, fmtMoney, toast, go, state, labelT
 import { CHUNK_SIZE, createCipher, chunkCount } from './vendor/video-crypto.mjs';
 import { mountCatalogOrderEditor } from './catalog-order-editor.mjs';
 import { createChunkUpload } from './upload-engine.mjs';
-import { mountUploadQueue } from './upload-queue.mjs';
+import { mountUploadQueue, uploadMime, fileProblem } from './upload-queue.mjs';
 import { mountProcessingStatus } from './processing-status.mjs';
 import { mountServerCoverPicker } from './cover-picker.mjs';
 import { copyText } from './clipboard.mjs';
 import { mountAdminWorkspace } from './admin-workspace.mjs';
+import { directoryMarkup, bindEntitlementEditor } from './member-directory.mjs';
 
 // A phone browser that lacks WebCrypto fails inside the encryptor with a JS TypeError like
 // "Cannot read properties of undefined (reading 'importKey')". That string is true but
@@ -24,7 +25,7 @@ function readableError(error, fallback = '操作没有完成') {
 
 // 标签清单只有一份：后台的标签行、面包屑的同级下拉、顶部搜索和弧形菜单都读它。
 const TABS = ADMIN_TABS.map(([key, label]) => [key, label]);
-// 「去教学影像管理」这一步在上传结果面板和处理面板里都要能跳，跳法只留这一份。
+// 「去视频管理」这一步在上传结果面板和处理面板里都要能跳，跳法只留这一份。
 const focusLibraryTab = () => { for (const tab of document.querySelectorAll('[data-tab="videos"]')) tab.click(); };
 
 const MAX_POSTER_BYTES = 2 * 1024 * 1024;
@@ -236,76 +237,150 @@ export async function mountAdmin(view, { reloadBoot }) {
   // The tab lives in the URL hash so a refresh, a bookmark or a "看激活码页" link
   // from the owner's own notes lands back on the panel they were working in.
   const tabKeys = new Set(TABS.map(([key]) => key));
-  let current = tabKeys.has(location.hash.slice(1)) ? location.hash.slice(1) : 'upload';
+  let current = tabKeys.has(location.hash.slice(1)) ? location.hash.slice(1) : 'members';
   let keysPage = 0;
   let keysFilter = '';
   const keyExport = { filter: '', nextOffset: 0, pending: false, paint: () => {} };
   const videoPages = [0];
   let videoQuery = '', videoStatus = 'all', videoKind = 'all';
   let drawPass = 0;
+  let saleDraft = null;
+  let paired = false;
+  const groups = [
+    ['日常工作', ['members', 'upload']],
+    ['内容与交易', ['videos', 'requests', 'keys', 'plans']],
+    ['运营与设置', ['behavior', 'audit', 'trash', 'settings']],
+  ];
+  const labels = new Map(TABS);
   view.innerHTML = `
-    <div class="wrap admin">
+    <div class="wrap admin admin-desk">
       <div class="spread">
-        <div class="section-title" style="margin:0">
-          <h1>后台</h1>
-          <p class="tiny dim">管理账号：<span class="mono">${esc(state.boot.viewer.email)}</span></p>
-        </div>
+        <div class="section-title" style="margin:0"><h1>管理后台</h1>
+          <p class="tiny dim">管理账号 · <span class="mono">${esc(state.boot.viewer.email)}</span></p></div>
         <button class="btn btn-ghost btn-sm" type="button" id="refresh">重新读取</button>
       </div>
       <div id="admin-crumbs"></div>
-      <div class="tabs" role="tablist">${TABS.map(([key, label]) => `<button role="tab" data-tab="${key}" aria-selected="${key === current}">${label}</button>`).join('')}</div>
-      <div id="tab-body" class="stack"></div>
+      <label class="admin-mobile-nav">切换后台页面<select class="input" id="admin-section-picker">${groups.map(([label, keys]) => `<optgroup label="${label}">${keys.map(key => `<option value="${key}"${key === current ? ' selected' : ''}>${labels.get(key)}</option>`).join('')}</optgroup>`).join('')}</select></label>
+      <nav class="admin-task-nav" aria-label="后台功能">${groups.map(([label, keys]) => `
+        <div class="admin-task-group"><span>${label}</span><div>${keys.map(key => `
+          <a data-tab="${key}" href="/admin#${key}"${key === current ? ' aria-current="page"' : ''}>${labels.get(key)}</a>`).join('')}</div></div>`).join('')}</nav>
+      <div class="admin-pair-tools"><button class="btn btn-sm btn-ghost" type="button" id="admin-pair" aria-pressed="false" aria-controls="admin-panes">同屏管理用户和上传</button>
+        <span id="admin-upload-summary" role="status" class="tiny dim"></span></div>
+      <div class="admin-panes" id="admin-panes">
+        <div id="tab-body" class="stack"></div>
+        <section id="admin-upload-pane" aria-label="视频上传" hidden></section>
+      </div>
     </div>`;
 
-  document.getElementById('refresh').addEventListener('click', async () => {
-    await reloadBoot();
-    await draw();
-  });
-  const crumbsHost = view.querySelector('#admin-crumbs');
+  const root = view.querySelector('.admin');
+  const slot = root.querySelector('#tab-body');
+  const uploadPane = root.querySelector('#admin-upload-pane');
+  const pair = root.querySelector('#admin-pair');
+  const crumbsHost = root.querySelector('#admin-crumbs');
   const paintCrumbs = () => mountBreadcrumb(crumbsHost, {
-    trail: [{ label: '后台', href: '/admin' }, { label: TABS.find(([key]) => key === current)?.[1] ?? '' }],
-    places: ADMIN_TABS.map(([key, label]) => ({ label, href: `/admin#${key}` })),
+    trail: [{ label: '后台', href: '/admin' }, { label: labels.get(current) }],
+    places: TABS.map(([key, label]) => ({ label, href: `/admin#${key}` })),
   });
-  async function selectTab(key) {
+  const isDesk = () => current === 'members' || current === 'upload';
+  let uploadMount;
+  function ensureUpload() {
+    if (uploadMount) return uploadMount;
+    uploadPane.setAttribute('aria-busy', 'true');
+    uploadMount = uploadTab(uploadPane).catch(error => {
+      if (!root.isConnected) return;
+      uploadMount = null;
+      uploadPane.innerHTML = `<p class="note note-bad">${esc(error.message)}</p><button type="button" class="btn btn-sm">重试读取上传面板</button>`;
+      uploadPane.querySelector('button').addEventListener('click', () => void ensureUpload());
+    }).finally(() => uploadPane.setAttribute('aria-busy', 'false'));
+    return uploadMount;
+  }
+  function showPanes() {
+    pair.hidden = !isDesk();
+    pair.setAttribute('aria-pressed', String(paired));
+    pair.textContent = paired ? '收起另一栏' : '同屏管理用户和上传';
+    const both = isDesk() && paired;
+    root.querySelector('#admin-panes').classList.toggle('is-paired', both);
+    root.querySelector('#admin-panes').dataset.primary = current;
+    slot.hidden = current === 'upload' && !both;
+    const wasHidden = uploadPane.hidden;
+    uploadPane.hidden = current !== 'upload' && !both;
+    if (wasHidden !== uploadPane.hidden) uploadPane.dispatchEvent(new Event('upload-pane-shown'));
+    if (!uploadPane.hidden) void ensureUpload();
+  }
+  pair.addEventListener('click', () => { paired = !paired; void draw(true); });
+  const selectTab = async (key, record = true) => {
+    if (!root.isConnected || !tabKeys.has(key)) return;
     current = key;
-    history.replaceState(null, '', `#${key}`);
+    root.querySelector('#admin-section-picker').value = key;
+    if (record && location.hash !== `#${key}`) history.pushState(history.state, '', `#${key}`);
     if (key === 'keys') keysPage = 0;
-    for (const other of view.querySelectorAll('[data-tab]')) {
-      other.setAttribute('aria-selected', String(other.dataset.tab === key));
+    for (const link of root.querySelectorAll('[data-tab]')) {
+      if (link.dataset.tab === key) link.setAttribute('aria-current', 'page');
+      else link.removeAttribute('aria-current');
     }
     paintCrumbs();
-    await draw();
-  }
-  for (const button of view.querySelectorAll('[data-tab]')) {
-    button.addEventListener('click', () => void selectTab(button.dataset.tab));
-  }
-  // 顶部搜索、悬停面板和弧形菜单都靠改 hash 换标签，所以这里必须听得见。
+    await draw(true);
+  };
+  root.querySelector('#admin-section-picker').addEventListener('change', event => void selectTab(event.target.value));
+  root.querySelector('.admin-task-nav').addEventListener('click', event => {
+    const link = event.target.closest('[data-tab]');
+    if (!link || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault(); void selectTab(link.dataset.tab);
+  });
   const onHashChange = () => {
-    const key = location.hash.slice(1);
-    if (tabKeys.has(key) && key !== current) void selectTab(key);
+    if (!root.isConnected) return;
+    const key = location.hash.slice(1) || 'members';
+    if (tabKeys.has(key) && key !== current) void selectTab(key, false);
   };
   window.addEventListener('hashchange', onHashChange);
+  const summary = root.querySelector('#admin-upload-summary');
+  function syncUploadSummary() {
+    const progress = uploadPane.querySelector('#u-progress');
+    const file = uploadPane.querySelector('#file')?.files?.[0];
+    const batch = uploadPane.querySelector('[data-batch-list]')?.childElementCount;
+    const single = progress && !progress.hidden ? uploadPane.querySelector('#u-phase')?.textContent : file ? '已选文件 · ' + file.name : '';
+    const text = [single, batch ? uploadPane.querySelector('[data-batch-summary]')?.textContent : ''].filter(Boolean).join(' · ');
+    if (summary.textContent !== text) summary.textContent = text;
+  }
+  const uploadWatch = new MutationObserver(syncUploadSummary);
+  uploadWatch.observe(uploadPane, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden'] });
+  uploadPane.addEventListener('change', syncUploadSummary);
+  const removed = new MutationObserver(() => {
+    if (root.isConnected) return;
+    window.removeEventListener('hashchange', onHashChange);
+    uploadWatch.disconnect();
+    removed.disconnect();
+  });
+  removed.observe(view, { childList: true });
+  root.querySelector('#refresh').addEventListener('click', async () => {
+    await reloadBoot();
+    if (root.isConnected) {
+      await draw();
+      if (!uploadPane.hidden) uploadPane.dispatchEvent(new Event('upload-pane-shown'));
+    }
+  });
   paintCrumbs();
 
-  const body = () => view.querySelector('#tab-body');
-
-  // 手机上表格会竖排成一张张卡片（见 styles.css 的 ≤860px 段），卡片上每个字段要写它叫什么。
-  // 字段名从这一列的表头按位置取，不在渲染代码里再手写一遍——否则改了 `<th>` 忘改卡片标签，
-  // 同一个意思就有两份互相矛盾的文案。
-  async function draw() {
+  async function draw(reuseMembers = false) {
+    if (!root.isConnected) return;
+    showPanes();
+    if (reuseMembers && isDesk() && slot.firstElementChild?.hasAttribute('data-member-pane')) return;
     const pass = ++drawPass;
-    const box = body();
-    // 换标签是异步的：上一栏还没画完就可能被面包屑/搜索/弧形菜单再换一次，
-    // 这一栏的容器已经不在页面上了。这时候安静地放弃，比抛一个没人看的 TypeError 好。
-    if (!box) return;
+    const box = document.createElement('div');
+    box.className = 'stack';
+    slot.replaceChildren(box);
+    if (slot.hidden) return;
+    const tab = isDesk() ? 'members' : current;
+    if (tab === 'members') box.setAttribute('data-member-pane', '');
     box.setAttribute('aria-busy', 'true');
-    box.innerHTML = '<p class="dim"><span class="spinner"></span> 正在读取…</p>';
+    box.innerHTML = '<p class="dim" role="status">正在读取…</p>';
     try {
-      await ({ upload: uploadTab, videos: videosTab, keys: keysTab, members: membersTab, behavior: behaviorTab, requests: requestsTab, plans: plansTab, settings: settingsTab, audit: auditTab, trash: trashTab })[current](box, pass);
+      await ({ videos: videosTab, keys: keysTab, members: membersTab, behavior: behaviorTab, requests: requestsTab, plans: plansTab, settings: settingsTab, audit: auditTab, trash: trashTab })[tab](box, pass);
       if (pass === drawPass && box.isConnected) labelTableCells(box);
     } catch (error) {
       if (pass !== drawPass || !box.isConnected) return;
-      box.innerHTML = `<div class="note note-bad">${esc(error.message ?? '读取失败')}</div>`;
+      box.innerHTML = `<div class="note note-bad">${esc(error.message ?? '读取失败')}</div><button type="button" class="btn btn-sm">重试读取</button>`;
+      box.querySelector('button').addEventListener('click', () => void draw());
     } finally {
       if (pass === drawPass && box.isConnected) box.setAttribute('aria-busy', 'false');
     }
@@ -605,79 +680,88 @@ export async function mountAdmin(view, { reloadBoot }) {
   async function uploadTab(box) {
     const limits = state.boot.limits ?? { maxVideoBytes: 1024 * 1024 * 1024 };
     box.innerHTML = `
-      <div id="batch-upload-host"></div>
-      <div id="processing-status-host"></div>
-      <div class="admin-cols">
-        <section class="panel stack">
-          <div class="section-title">
-            <h2>上传一条视频</h2>
-            <p class="tiny dim">浏览器按 ${fmtBytes(CHUNK_SIZE)} 的数据块加密后逐块上传，服务端只存密文。</p>
-          </div>
+      <header class="upload-heading">
+        <h2>上传视频</h2>
+        <p class="dim">上传后先存为草稿，发布后观众才能看到。</p>
+        <div class="row" role="group" aria-label="上传方式">
+          <button class="btn btn-primary" type="button" data-upload-mode="single" aria-controls="single-upload" aria-pressed="true">单个视频</button>
+          <button class="btn btn-ghost" type="button" data-upload-mode="batch" aria-controls="batch-upload-host" aria-pressed="false">批量上传</button>
+        </div>
+      </header>
+        <section class="panel stack" id="single-upload" aria-label="单个视频">
           <label class="drop" id="drop">
-            <input class="sr-only" id="file" type="file" accept="video/*,.mp4,.mov,.webm" style="position:absolute;left:-9999px" />
+            <input class="sr-only" id="file" aria-label="选择视频文件" type="file" accept="video/mp4,video/webm,video/quicktime,.mp4,.mov,.webm" />
             <p id="drop-text">点击选择，或把视频拖到这里</p>
             <p class="tiny dim" id="drop-hint">支持 MP4 / WebM / MOV，单个文件不超过 ${fmtBytes(limits.maxVideoBytes)}</p>
           </label>
           <p class="note note-warn" id="env-note" hidden>你现在用的是微信或 QQ 内置浏览器：它常常读不出视频时长，也可能不让你选本地文件。请点右上角「···」→「在浏览器打开」，iPhone 用 Safari、安卓用 Chrome 或 Edge 再上传。</p>
           <p class="note note-bad" id="crypto-note" hidden></p>
-          <div id="probe" class="stack"></div>
-          <form class="stack" id="upload-form">
-            <div class="field"><label for="u-title">教学影像名称（显示在目录和水印旁）</label>
+          <div id="probe" role="status" class="stack"></div>
+          <form class="stack" id="upload-form" hidden>
+            <fieldset class="upload-fields stack"><legend>视频信息</legend>
+            <div class="field"><label for="u-title">视频标题</label>
               <input class="input" id="u-title" name="title" maxlength="120" required /></div>
-            <div class="field"><label for="u-desc">一句话说明（选填）</label>
+            <div class="field"><label for="u-desc">简介（选填）</label>
               <input class="input" id="u-desc" name="description" maxlength="200" /></div>
             <div class="row" style="gap:12px;align-items:flex-end">
               <div class="field" style="flex:1 1 150px"><label for="u-duration">时长（秒）</label>
-                <input class="input num" id="u-duration" name="durationSeconds" inputmode="numeric" />
+                <input class="input num" id="u-duration" name="durationSeconds" type="number" min="1" max="86400" step="1" required />
                 <p class="tiny" id="u-ratio-note" style="color:var(--warn);margin-top:4px"></p></div>
-              <div class="field" style="flex:1 1 150px"><label for="u-preview">免费试看（秒，0 表示不试看）</label>
-                <input class="input num" id="u-preview" name="previewSeconds" inputmode="numeric" value="${esc(state.boot.settings.default_preview_seconds ?? 300)}" />
-                <p class="tiny dim" style="margin-top:4px">试看提供的是教学影像前若干秒对应的字节。若试看秒数不小于总时长，站点最多提供半个文件，不会免费开放完整教学影像。</p></div>
-              <div class="field" style="flex:1 1 170px"><label for="u-tier">需要的会员等级</label>
+              <div class="field" style="flex:1 1 150px"><label for="u-preview">试看时长（秒）</label>
+                <input class="input num" id="u-preview" name="previewSeconds" type="number" min="0" max="3600" step="1" required value="${esc(state.boot.settings.default_preview_seconds ?? 300)}" />
+                <p class="tiny dim" style="margin-top:4px">填 0 可关闭试看。</p></div>
+              <div class="field" style="flex:1 1 170px"><label for="u-tier">完整观看所需等级</label>
                 <select class="input" id="u-tier" name="tierRank"></select>
                 <p class="tiny dim" id="u-tier-legend" style="margin-top:4px"></p></div>
-              <div class="field" style="flex:1 1 150px"><label for="u-kind">这是哪一类</label>
+              <div class="field" style="flex:1 1 150px"><label for="u-kind">视频分类</label>
                 <select class="input" id="u-kind" name="kind">
                   <option value="live">真实拳击</option>
                   <option value="anime">动画拳击</option>
                 </select></div>
             </div>
-            <div class="field">
-              <label for="u-poster-at">从视频画面选封面（拖动时间条预览）</label>
+            <details class="upload-cover-settings"><summary>更换封面</summary>
               <div class="cover-row">
                 <div class="poster cover-thumb" id="u-cover"><span class="poster-code">封面</span></div>
                 <div class="stack" style="gap:8px">
                   <input id="u-poster-at" aria-label="选择封面画面秒数" type="range" min="0" max="120" step="1" value="3" disabled />
-                  <p class="tiny dim" id="u-cover-note">选好视频后自动取第 3 秒的一帧，拖时间条换一帧。</p>
-                  <label class="tiny dim" for="u-poster">不满意可以自己传一张（JPG/PNG/WebP，不超过 2 MB）</label>
+                  <p class="tiny dim" id="u-cover-note">默认使用视频截图。拖动滑块可更换画面。</p>
+                  <label class="tiny dim" for="u-poster">或上传图片（JPG、PNG、WebP，最大 2 MB）</label>
                   <input class="input" id="u-poster" type="file" accept="image/jpeg,image/png,image/webp" />
                 </div>
               </div>
-            </div>
+            </details>
+            </fieldset>
             <div class="row">
-              <button class="btn btn-primary" type="submit" id="u-go" disabled>开始加密并上传</button>
+              <button class="btn btn-primary" type="submit" id="u-go" disabled>上传并保存草稿</button>
               <button class="btn btn-ghost" type="button" id="u-abort" hidden>中止这次上传</button>
             </div>
           </form>
           <div id="u-progress" class="stack" hidden>
             <ol class="flow" id="u-steps" aria-label="上传走到哪一步">
-              <li data-step="start">建档</li>
-              <li data-step="parts">传数据块</li>
-              <li data-step="seal">校验登记</li>
+              <li data-step="start">准备</li>
+              <li data-step="parts">上传</li>
+              <li data-step="seal">保存草稿</li>
             </ol>
-            <div class="spread tiny dim"><span id="u-phase">准备中</span><span class="num" id="u-count">0 / 0 数据块</span></div>
+            <div class="spread tiny dim"><span id="u-phase">准备中</span><span class="num" id="u-count">等待上传</span></div>
             <div class="progress-line"><i id="u-bar" style="width:0%"></i></div>
           </div>
           <div id="u-result"></div>
         </section>
-        <aside class="panel stack">
-          <div class="section-title"><h2>上传检查</h2></div>
-          <p class="tiny dim">时长能读就自动填；读不出（如 HEVC 的 MOV）要手工填秒数，否则算不出试看位置。</p>
-          <p class="tiny dim">faststart 决定未登录试看能否稳定起播，检测不到会提示重新导出。</p>
-          <p class="tiny dim">上传后保存为草稿，在教学影像管理中点击发布后，观众才能查看。</p>
-        </aside>
-      </div>`;
+      <div id="batch-upload-host" hidden></div>
+      <details id="upload-processing"><summary>查看视频与封面处理记录</summary><div id="processing-status-host"></div></details>`;
 
+    const modes = box.querySelectorAll('[data-upload-mode]');
+    for (const button of modes) {
+      button.addEventListener('click', () => {
+        for (const option of modes) {
+          const selected = option === button;
+          option.setAttribute('aria-pressed', String(selected));
+          option.classList.toggle('btn-primary', selected);
+          option.classList.toggle('btn-ghost', !selected);
+          box.querySelector('#' + option.getAttribute('aria-controls')).hidden = !selected;
+        }
+      });
+    }
     const serverPicker = document.createElement('section'); serverPicker.hidden = true;
     box.querySelector('#processing-status-host').after(serverPicker);
     mountProcessingStatus(box.querySelector('#processing-status-host'), { confirmationScope: state.boot.viewer.id, onGoLibrary: () => focusLibraryTab(), onPickCover: videoId => {
@@ -690,10 +774,10 @@ export async function mountAdmin(view, { reloadBoot }) {
     const plans = (await get('admin-plans')).plans ?? [];
     if (!intendedForm.isConnected || !box.contains(intendedForm)) return;
     tierSelect.innerHTML = tierOptions(plans, 1);
-    document.getElementById('u-tier-legend').textContent = tierLegend(plans);
+    document.getElementById('u-tier-legend').textContent = plans.length ? tierLegend(plans) : '';
     if (!box.isConnected) return;
     mountUploadQueue(box.querySelector('#batch-upload-host'), {
-      post, plans, defaultPreview: state.boot.settings.default_preview_seconds ?? 300,
+      post, tierOptions: tierOptions(plans, 1), defaultPreview: state.boot.settings.default_preview_seconds ?? 300,
       maxBytes: limits.maxVideoBytes, probeDuration, probeFaststart,
       captureCover: (file, duration, signal) => captureFrameAt(file, Math.min(2, Math.max(.1, duration - .2)), 8000, signal),
       uploadCover: (videoId, source, signal) => uploadCover(videoId, source, signal, { retryProcessing: false }),
@@ -702,6 +786,7 @@ export async function mountAdmin(view, { reloadBoot }) {
       // 候选帧面板是 cover-picker，两档进度只有「视频与封面处理」那一处来源，这里只给入口。
       onPickCover: (videoId, panel) => mountServerCoverPicker(panel, { videoId, uploadCover, onSelected: reloadBoot }),
       onWatchProgress: (videoId) => {
+        box.querySelector('#upload-processing').open = true;
         const line = document.querySelector(`[data-video-id="${videoId}"]`);
         (line ?? document.getElementById('processing-status-host'))?.scrollIntoView({ block: 'center', behavior: 'smooth' });
       },
@@ -711,10 +796,6 @@ export async function mountAdmin(view, { reloadBoot }) {
     let selectionVersion = 0;
     let uploadBusy = false;
     let poster = null;
-    // 取帧这件事在手机上会比"选好文件"慢十几秒（大文件要一路读到第 44 秒才画得出那一帧）。
-    // 上传按钮在时长读出来那一刻就解锁了，所以站长完全可能按下去的时候帧还在解 ——
-    // 那一趟视频传完了、封面没挂上，而他看到的是同一个面板上根本没有这句话。
-    // 这两个变量就是为了让提交那一步能等它解完。
     let coverBusy = false;
     let coverUserSelected = false;
     let coverController = null;
@@ -724,6 +805,8 @@ export async function mountAdmin(view, { reloadBoot }) {
     let probedFaststart = null;
     const dropText = document.getElementById('drop-text');
     const probeBox = document.getElementById('probe');
+
+    const initialHint = box.querySelector('#drop-hint').textContent;
 
     function coverNote(text, bad) {
       const note = document.getElementById('u-cover-note');
@@ -755,11 +838,7 @@ export async function mountAdmin(view, { reloadBoot }) {
         const box = document.getElementById('u-cover');
         box.innerHTML = '<span class="poster-code"><span class="spinner"></span></span>';
         coverNote(`正在取第 ${seconds} 秒的一帧…`, false);
-        const shot = { ...await captureFrameAt(file, seconds, 30000, coverController.signal), at: seconds };
-        // Two things have to both still be true before painting: the owner has not dragged
-        // to another second, and nothing has cancelled this job (choosing his own picture
-        // does that). Painting a late frame over the file he just picked would silently
-        // throw away what he decided.
+        const shot = await captureFrameAt(file, seconds, 30000, coverController.signal);
         if (mine !== coverSeq || Number(slider.value) !== seconds) return;
         if (!shot.blob) {
           poster = null;
@@ -768,19 +847,12 @@ export async function mountAdmin(view, { reloadBoot }) {
           return;
         }
         poster = new File([shot.blob], 'cover.jpg', { type: 'image/jpeg' });
-        // 退到开头那一眼取成功时必须说出来：不然时间条停在第 44 秒、图上却是第 2 秒的画面，
-        // 他下一次拖回去会以为这个控件坏了。
-        showCover(poster, `封面：第 ${shot.at} 秒的一帧，${fmtBytes(shot.blob.size)}。拖时间条换一帧。`
-          + (shot.at === seconds ? '' : `（第 ${seconds} 秒那一帧没读到，先用了开头这帧。）`));
+        showCover(poster, `当前封面取自第 ${seconds} 秒。`);
       } finally {
-        // 只有最新那一次解帧才算"还在解"：拖过时间条会有旧的那次还在收尾，
-        // 让它把标记清掉的话，提交时就又不再等了。
         if (mine === coverSeq) coverBusy = false;
       }
     }
 
-    // 这一条上传的封面走到哪一步：attached=桶里有了，blob=手上还捏着取到的那一帧，
-    // reason=给站长看的那句话。上传结果面板和重试按钮都读这一个对象。
     let coverState = { attached: false, reason: '', blob: null };
     let coverTimer = null;
     document.getElementById('u-poster-at').addEventListener('input', () => {
@@ -790,15 +862,15 @@ export async function mountAdmin(view, { reloadBoot }) {
     });
 
     const syncGo = () => {
-      // The button used to unlock only from a successful probe. Phone browsers (and WeChat's
-      // webview especially) often cannot read a local video's duration, and the page then told
-      // the owner to type it — with no listener on that field, so it never unlocked.
       const typed = Number(document.getElementById('u-duration').value);
-      document.getElementById('u-go').disabled = !(file && Number.isFinite(typed) && typed > 0);
+      const locked = uploadBusy || Boolean(session);
+      document.getElementById('file').disabled = locked;
+      box.querySelector('.upload-fields').disabled = locked;
+      document.getElementById('u-go').disabled = locked || !file || !Number.isSafeInteger(typed) || typed < 1 || typed > 86400 || Boolean(cryptoProblem);
       const preview = Number(document.getElementById('u-preview').value) || 0;
       const ratio = document.getElementById('u-ratio-note');
       ratio.textContent = file && typed > 0 && preview > 0 && preview / typed > 0.5
-        ? `注意：试看 ${preview} 秒占教学影像时长 ${Math.round((preview / typed) * 100)}%。时长填小会免费开放过多内容，请核对教学影像的实际秒数。`
+        ? `试看已超过视频时长的一半，请核对秒数。`
         : '';
       const note = document.getElementById('env-note');
       if (note && file) note.hidden = !/MicroMessenger|QQ\/|wechat/i.test(navigator.userAgent);
@@ -815,56 +887,64 @@ export async function mountAdmin(view, { reloadBoot }) {
       poster = null;
       coverState = { attached: false, reason: '', blob: null };
       probedFaststart = null;
-      // A different file invalidates any half-finished upload: its chunks, its data key and
-      // its draft row all belong to the file that was chosen before.
       session = null;
       cipher = null;
       resumeFrom = null;
       chunkTask = null;
       const slider = document.getElementById('u-poster-at');
+      const form = box.querySelector('#upload-form');
+      const title = document.getElementById('u-title');
+      const durationField = document.getElementById('u-duration');
+      if (coverUrl) URL.revokeObjectURL(coverUrl);
+      coverUrl = null;
+      slider.disabled = true;
+      document.getElementById('u-cover').textContent = '封面';
+      document.getElementById('u-poster').value = '';
+      coverNote('默认使用视频截图。拖动滑块可更换画面。', false);
+      durationField.value = '';
+      const problem = file && fileProblem(file, limits.maxVideoBytes);
+      if (problem) file = null;
+      form.hidden = !file;
+      document.getElementById('u-progress').hidden = true;
+      document.getElementById('u-result').replaceChildren();
       if (!file) {
-        slider.disabled = true;
-        document.getElementById('u-cover').innerHTML = '<span class="poster-code">封面</span>';
-        coverNote('选好视频后自动取第 3 秒的一帧，拖时间条换一帧。', false);
+        dropText.textContent = '点击选择，或把视频拖到这里';
+        document.getElementById('drop-hint').textContent = initialHint;
+        document.getElementById('file').value = '';
+        probeBox.textContent = problem || '';
+        syncGo();
         return;
       }
+      title.value = file.name.replace(/\.[a-z0-9]+$/i, '').slice(0, 120);
       dropText.textContent = file.name;
-      // Show the embedded-browser warning immediately: the probe below can take up to 20
-      // seconds, and a phone owner should not sit watching a spinner first.
+      document.getElementById('drop-hint').textContent = fmtBytes(file.size) + ' · 点击更换视频';
+      probeBox.textContent = '正在读取视频时长…';
       syncGo();
-      document.getElementById('drop-hint').textContent = `${fmtBytes(file.size)} · ${file.type || '未知类型'} · 共 ${chunkCount(file.size)} 个数据块`;
-      probeBox.innerHTML = '<p class="tiny dim"><span class="spinner"></span> 正在读取时长和 MP4 结构…</p>';
       const duration = await probeDuration(file);
       if (version !== selectionVersion || !box.isConnected) return;
       const faststart = /mp4|mov|quicktime/i.test(file.type) ? await probeFaststart(file) : null;
       if (version !== selectionVersion || !box.isConnected) return;
       probedFaststart = faststart;
-      document.getElementById('u-duration').value = duration ?? '';
-      probeBox.innerHTML = `<div class="note ${duration ? '' : 'note-warn'}">时长：${duration ? fmtDuration(duration) : '浏览器读不出来。直接在下面「时长（秒）」里填数字，填好就能上传。'}</div>`
-        + (faststart === null ? '' : `<div class="note ${faststart ? '' : 'note-warn'}">faststart：${faststart ? 'moov 在 mdat 之前，试看和拖动都正常' : 'moov 在文件末尾，未登录试看可能无法起播。建议在导出时勾选「Web 优化 / faststart」后重新上传。'}</div>`);
+      if (!durationField.value && duration) durationField.value = duration;
+      probeBox.textContent = [
+        !duration && !durationField.value ? '未能读取视频时长，请填写下方的秒数。' : '',
+        faststart === false ? '这个文件可能无法立即试看。建议导出时启用「网页优化」。' : '',
+      ].filter(Boolean).join(' ');
       syncGo();
-      if (!document.getElementById('u-title').value) {
-        document.getElementById('u-title').value = file.name.replace(/\.[a-z0-9]+$/i, '').slice(0, 120);
-      }
       slider.max = String(Math.max(1, (duration ?? 120) - 1));
       slider.value = String(defaultCoverSecond(duration));
       slider.disabled = false;
-      // 不 await：长片解一帧要十几秒，上传按钮不该因此一直灰着（时长读出来了就该能传）。
-      // 真按下的时候提交那一步会等它，见 upload-form 的 submit。
-      coverJob = pickCover();
+      if (!coverUserSelected) coverJob = pickCover();
     }
 
     document.getElementById('file').addEventListener('change', (event) => void adopt(event.target.files[0] ?? null));
     document.getElementById('u-duration').addEventListener('input', syncGo);
     document.getElementById('u-preview').addEventListener('input', syncGo);
 
-    // Chunk encryption needs WebCrypto, which the browser withholds whenever the page is not
-    // a secure context — some in-app browsers proxy the page in a way that loses it. Saying so
-    // when the panel opens beats a submit button that appears to do nothing.
     const cryptoProblem = !window.isSecureContext
-      ? '这个页面不是安全上下文（不是 https，或被内嵌浏览器代理改写了），浏览器因此不提供网页加密能力。请用系统浏览器打开后台再上传。'
+      ? '请用 HTTPS 地址打开后台，再上传视频。'
       : (!crypto?.subtle
-        ? '这个浏览器缺少 WebCrypto（crypto.subtle），无法在手机上加密数据块。iPhone 用 Safari、安卓用 Chrome 或 Edge 打开后台再上传。'
+        ? '当前浏览器无法加密视频，请用 Safari、Chrome 或 Edge 上传。'
         : null);
     if (cryptoProblem) {
       const note = document.getElementById('crypto-note');
@@ -874,13 +954,11 @@ export async function mountAdmin(view, { reloadBoot }) {
     document.getElementById('u-poster').addEventListener('change', (event) => {
       const picked = event.target.files[0] ?? null;
       if (!picked) return;
-      if (picked.size > MAX_POSTER_BYTES) {
-        poster = null;
-        toast('这张封面超过 2 MB，请先压缩再选。', 'warn');
+      if (!picked.size || picked.size > MAX_POSTER_BYTES || !['image/jpeg', 'image/png', 'image/webp'].includes(picked.type)) {
+        event.target.value = '';
+        toast('请选择 2 MB 以内的 JPG、PNG 或 WebP 图片。', 'warn');
         return;
       }
-      // 他既然自己选了图，正在解的那一帧就必须作废：晚到的画面会把刚选的这张盖掉，
-      // 而屏幕上只会闪过一句"用的是你自己传的那张"，看不出被换了。
       window.clearTimeout(coverTimer); coverTimer = null; coverUserSelected = true;
       coverSeq += 1;
       coverBusy = false;
@@ -892,6 +970,7 @@ export async function mountAdmin(view, { reloadBoot }) {
     drop.addEventListener('dragover', (event) => event.preventDefault());
     drop.addEventListener('drop', (event) => {
       event.preventDefault();
+      if (event.dataTransfer.files.length > 1) return toast('要上传多个视频，请先选「批量上传」。', 'warn');
       void adopt(event.dataTransfer.files[0] ?? null);
     });
 
@@ -924,8 +1003,6 @@ export async function mountAdmin(view, { reloadBoot }) {
     uploadObserver.observe(document.documentElement, { childList: true, subtree: true });
     window.addEventListener('pagehide', hideUpload, { once: true });
 
-    // 光看"第 3 / 14 分片"说不清整件事还剩几步，所以把阶段摆出来：走完的打勾、
-    // 正在做的亮着、卡住的那颗标红。
     const STEP_ORDER = ['start', 'parts', 'seal'];
     let stepNow = null;
     function setStep(key) {
@@ -949,9 +1026,6 @@ export async function mountAdmin(view, { reloadBoot }) {
       li.classList.add('is-bad');
     }
 
-    // The server hands out a batch of write addresses and names the next chunk itself.
-    // Walking by that `next` is the fix for the client stepping by 50 while the server
-    // returned 100: most chunks were requested and written a second time.
     async function streamChunks(videoId, from) {
       const bar = document.getElementById('u-bar');
       const phase = document.getElementById('u-phase');
@@ -960,41 +1034,36 @@ export async function mountAdmin(view, { reloadBoot }) {
       if (cancelled) throw new DOMException('已取消', 'AbortError');
       chunkTask ??= createChunkUpload({ file, cipher, videoId, totalChunks, post, onProgress: value => {
         if (cancelled || !uploadForm.isConnected) return;
-        phase.textContent = '并行加密并上传数据块';
+        phase.textContent = '正在上传视频';
         bar.style.width = `${Math.round(value.bytes / value.size * 95)}%`;
-        count.textContent = `${value.completed} / ${value.total} 数据块 · ${fmtBytes(value.bytes)} / ${fmtBytes(value.size)}`;
+        count.textContent = `${Math.round(value.bytes / value.size * 100)}% · ${fmtBytes(value.bytes)} / ${fmtBytes(value.size)}`;
       } });
       try { await chunkTask.run({ signal: uploadController.signal, concurrency: 2 }); }
       finally { resumeFrom = chunkTask.firstMissing(); }
     }
 
     async function finishUpload(videoId, form) {
-      // 结果面板要说的是"这一条的封面走到哪一步"，不是"刚才有没有抛过错"：
-      // 压根没取到画面（没有图可传）和图没写进去（有图但失败了）是两件事，
-      // 以前只有后者会被说出来，于是传完发现片库是空的，人却不知道是哪一步没做。
       const cover = coverState;
       const bar = document.getElementById('u-bar');
       const phase = document.getElementById('u-phase');
       setStep('seal');
-      phase.textContent = '校验密文并登记';
+      phase.textContent = '正在保存草稿';
       document.getElementById('u-abort').disabled = true;
       // The probe result, not the MIME type: every MP4 would otherwise be
       // recorded as faststart and the 片库 "尾部 moov" warning could never fire.
-      const done = await post('admin-upload-complete', { videoId, cipher, faststart: probedFaststart === true });
+      await post('admin-upload-complete', { videoId, cipher, faststart: probedFaststart === true });
       document.dispatchEvent(new Event('boxvault-uploaded'));
       bar.style.width = '100%';
       phase.textContent = '完成';
       setStep(null);
-      // 登记成功后整块退役：一条停在 100% 的进度条看起来像"这次还没完"，
-      // 而下面紧接着就是封面候选帧和处理状态，两块都在说这件事（站长 2026-10-17 要点名收掉）。
       document.getElementById('u-progress').hidden = true;
       document.getElementById('u-abort').hidden = true;
       document.getElementById('u-result').innerHTML = `
-          <div class="note">已登记为草稿（密文 ${fmtBytes(done.encSize)}）。
-            <a href="/admin" data-link id="go-videos" style="color:var(--accent)">去教学影像管理发布</a></div>
+          <div class="note">《${esc(form.elements.title.value)}》已保存为草稿。
+            <a href="/admin" data-link id="go-videos" style="color:var(--accent)">去视频管理发布</a></div>
           ${cover.attached ? '' : `<div class="note note-warn">封面还没挂上：${esc(cover.reason)}
             ${cover.blob ? '<button class="btn btn-sm" type="button" id="u-cover-retry">重试刚才那一帧</button>' : ''}
-            教学影像管理这一行的封面格里有「补封面」，选一张图就行，不用重传这条教学影像。</div>`}`;
+            可稍后在视频管理中补封面。</div>`}`;
       document.getElementById('u-cover-retry')?.addEventListener('click', async (event) => {
         const button = event.currentTarget;
         button.disabled = true;
@@ -1004,7 +1073,6 @@ export async function mountAdmin(view, { reloadBoot }) {
         }
         try {
           await uploadCover(videoId, cover.blob);
-          coverState = { attached: true, reason: '', blob: cover.blob };
           button.replaceWith(document.createTextNode(' 封面已挂上。'));
         } catch (error) {
           button.disabled = false;
@@ -1021,6 +1089,14 @@ export async function mountAdmin(view, { reloadBoot }) {
         mountServerCoverPicker(candidates, { videoId, uploadCover, onSelected: reloadBoot });
       }
       form.reset();
+      form.hidden = true;
+      selectionVersion++;
+      coverSeq++; coverController?.abort();
+      document.getElementById('file').value = '';
+      document.getElementById('drop-hint').textContent = initialHint;
+      if (coverUrl) URL.revokeObjectURL(coverUrl);
+      coverUrl = null;
+      form.querySelector('details').open = false;
       document.getElementById('u-preview').value = String(state.boot.settings.default_preview_seconds ?? 300);
       document.getElementById('drop-text').textContent = '点击选择，或把视频拖到这里';
       document.getElementById('probe').innerHTML = '';
@@ -1028,8 +1104,8 @@ export async function mountAdmin(view, { reloadBoot }) {
       poster = null;
       session = null;
       cipher = null;
-      await reloadBoot();
       chunkTask = null;
+      await reloadBoot().catch(() => toast('草稿已保存，暂时无法更新列表。', 'warn'));
     }
 
     async function attachSelectedCover(videoId) {
@@ -1069,24 +1145,24 @@ export async function mountAdmin(view, { reloadBoot }) {
       document.getElementById('u-go').disabled = false;
       session = null; cipher = null; chunkTask = null; resumeFrom = null;
       uploadBusy = false;
+      document.getElementById('u-progress').hidden = true;
+      document.getElementById('u-result').textContent = '上传已取消。';
+      syncGo();
     });
 
     document.getElementById('upload-form').addEventListener('submit', async (event) => {
       event.preventDefault();
-      if (uploadBusy || session) return toast('当前上传已有会话，请先继续、中止，或到教学影像管理核对结果。', 'warn');
+      if (uploadBusy || session) return toast('当前上传已有会话，请先继续、中止，或到视频管理核对结果。', 'warn');
+      if (cryptoProblem) return toast(cryptoProblem, 'warn');
       if (!file) return toast('请先选择视频文件。', 'warn');
-      // `currentTarget` is nulled as soon as this handler yields, so the node has to
-      // be held here — the reset at the end of a multi-minute upload runs long after.
       const form = event.currentTarget;
       const fields = Object.fromEntries(new FormData(form));
       const duration = Number(fields.durationSeconds);
       if (!Number.isSafeInteger(duration) || duration <= 0) return toast('请填写有效时长（秒）。', 'bad');
       const button = document.getElementById('u-go');
-      button.disabled = true;
       uploadBusy = true;
+      syncGo();
       uploadController = new AbortController();
-      // 上一次中止留下的标记必须在这里清掉，否则按过一次「中止」之后，
-      // 这个页面上每一次重新提交都会在第一个分片前就报"已取消"。
       cancelled = false;
       document.getElementById('u-progress').hidden = false;
       document.getElementById('u-abort').hidden = false;
@@ -1094,28 +1170,20 @@ export async function mountAdmin(view, { reloadBoot }) {
       const phase = document.getElementById('u-phase');
       activeUpload = (async () => {
       try {
-        // Inside the try on purpose: anything thrown here used to leave the button disabled
-        // with no message, which reads as "手机上传点了没反应".
-        // 手机上这一刻那一帧很可能还在解（419 MB 的片子要一路读到第 44 秒才画得出来）。
-        // 不等它，视频传完封面就没了 —— 这是"上传完取不到封面"最常见的一条路，
-        // 而且屏幕上一句提示都没有，人只能到片库才发现那一格是空的。
         cipher = createCipher(CHUNK_SIZE);
         setStep('start');
-        phase.textContent = '申请上传会话';
+        phase.textContent = '正在准备上传';
         const started = await post('admin-upload-start', {
-          title: fields.title, description: fields.description ?? '', contentType: file.type,
+          title: fields.title, description: fields.description ?? '', contentType: uploadMime(file),
           plainSize: file.size, durationSeconds: duration,
           previewSeconds: Number(fields.previewSeconds ?? 0), tierRank: Number(fields.tierRank),
-          // The category is chosen at upload because it is what the buyer is picking between;
-          // guessing it from the title would put anime drills in the live box and vice versa.
           kind: fields.kind === 'anime' ? 'anime' : 'live',
         });
         session = { videoId: started.videoId };
         if (cancelled || !uploadForm.isConnected) throw new DOMException('已取消', 'AbortError');
-        // The server counts the chunks; the client only displays that number.
         totalChunks = Number(started.chunkTotal) || chunkCount(file.size);
         await streamChunks(started.videoId, 0);
-        phase.textContent = '数据已传完，确认封面';
+        phase.textContent = '正在保存封面';
         await attachSelectedCover(started.videoId);
         await finishUpload(started.videoId, form);
       } catch (error) {
@@ -1131,8 +1199,8 @@ export async function mountAdmin(view, { reloadBoot }) {
             : `前 ${restartAt} 个数据块已经写好，不用从头再来。`;
         }
         note += '</div>';
-        if (session && restartAt !== null) {
-          note += `<button class="btn btn-sm" type="button" id="u-resume">从第 ${restartAt + 1} 数据块继续</button>`;
+        if (session && restartAt !== null && !isWriteOutcomeUnknown(error)) {
+          note += `<button class="btn btn-sm" type="button" id="u-resume">继续上传</button>`;
         }
         document.getElementById('u-result').innerHTML = note;
         document.getElementById('u-resume')?.addEventListener('click', async (event) => {
@@ -1159,21 +1227,25 @@ export async function mountAdmin(view, { reloadBoot }) {
           } catch (again) {
             if (cancelled || !uploadForm.isConnected) return;
             retry.disabled = false;
-            document.getElementById('u-result').innerHTML = `<div class="note note-bad">${esc(readableError(again, '还是没传上去'))}
-              <br>再按一次「继续」可以接着传；想丢掉这条草稿就点「中止这次上传」。</div>`;
+            const note = document.getElementById('u-result').querySelector('.note');
+            if (note) note.textContent = readableError(again, '续传失败，请再试一次。');
+            if (isWriteOutcomeUnknown(again)) {
+              retry.hidden = true;
+              if (note) note.textContent += ' 请先在视频管理中核对草稿。';
+            }
             toast(readableError(again, '续传没有完成'), 'bad');
           }
-          finally { uploadBusy = false; if (uploadForm.isConnected) document.getElementById('u-abort').disabled = false; }
+          finally { uploadBusy = false; if (uploadForm.isConnected) { syncGo(); document.getElementById('u-abort').disabled = false; } }
           })();
           await activeUpload;
         });
         if (session && isWriteOutcomeUnknown(error)) {
-          toast('上传结果不确定：请先在教学影像管理里核对这条草稿，再决定是否重传。', 'warn');
+          toast('上传结果不确定：请先在视频管理里核对这条草稿，再决定是否重传。', 'warn');
         }
       } finally {
         uploadBusy = false;
         if (button.isConnected) {
-          button.disabled = false;
+          syncGo();
           document.getElementById('u-abort').disabled = false;
         }
       }
@@ -1210,8 +1282,8 @@ export async function mountAdmin(view, { reloadBoot }) {
             <td class="cover">${coverCell(item)}</td>
             <td class="video-name-cell"><div class="video-name-editor">
               <strong class="video-name-heading" data-video-name>${esc(item.title?.trim() || '名称缺失，请核对并补充')}</strong>
-              <label class="field"><span class="tiny dim">编辑教学影像名称</span><textarea class="input" data-title rows="3" maxlength="120" aria-label="教学影像名称（显示在目录和水印旁）">${esc(item.title ?? '')}</textarea></label>
-              <label class="field"><span class="tiny dim">一句话说明（选填）</span><input class="input" data-desc maxlength="200" value="${esc(item.description ?? '')}" placeholder="可补充本节内容" aria-label="一句话说明" /></label>
+              <label class="field"><span class="tiny dim">编辑教学影像名称</span><textarea class="input" data-title rows="3" maxlength="120" aria-label="视频标题">${esc(item.title ?? '')}</textarea></label>
+              <label class="field"><span class="tiny dim">简介（选填）</span><input class="input" data-desc maxlength="200" value="${esc(item.description ?? '')}" placeholder="可补充本节内容" aria-label="一句话说明" /></label>
             </div></td>
             <td><span class="pill ${item.status === 'published' ? 'pill-good' : item.status === 'uploading' ? 'pill-bad' : ''}">${statusLabel(item.status)}</span></td>
             <td>${selectTier(item, plans)}</td>
@@ -1236,7 +1308,7 @@ export async function mountAdmin(view, { reloadBoot }) {
             </div></td>
           </tr>`).join('')}</tbody>
         </table></div>`}
-        <nav class="row" aria-label="教学影像管理分页" style="margin-top:16px;gap:12px">
+        <nav class="row" aria-label="视频管理分页" style="margin-top:16px;gap:12px">
           <button class="btn" type="button" data-video-page="previous"${videoPages.length < 2 ? ' disabled' : ''}>上一页</button>
           <span class="tiny dim">第 ${videoPages.length} 页${data.hasMore ? ' · 后面还有内容' : ' · 已到末页'}</span>
           <button class="btn" type="button" data-video-page="next"${!data.hasMore || !validNext ? ' disabled' : ''}>下一页</button>
@@ -1767,7 +1839,7 @@ export async function mountAdmin(view, { reloadBoot }) {
       <section class="panel stack">
         <div class="section-title"><h2>回收站</h2>
           <p class="tiny dim">停用的账号、撤销的会员权益、作废或冻结的激活码、取消的购买记录都在这里。
-            这里只做两件事：核对有没有误撤，以及把它放回原位。<strong>站点不提供彻底删除</strong>——要删除教学影像请在「教学影像管理」里操作。</p></div>
+            这里只做两件事：核对有没有误撤，以及把它放回原位。<strong>站点不提供彻底删除</strong>——要删除教学影像请在「视频管理」里操作。</p></div>
         <div class="trash-bar">
           <div class="field"><label for="t-kind">类型</label>
             <select class="input" id="t-kind">${TRASH_KINDS.map(([key, label]) => `<option value="${key}"${key === trashKind ? ' selected' : ''}>${label}（${badge(counts[key])}）</option>`).join('')}</select></div>
@@ -1861,90 +1933,28 @@ export async function mountAdmin(view, { reloadBoot }) {
   }
 
 
-  let memberSearch = '';
-  const memberPages = [0], accountPages = [0];
+  const emptyFilters = { q: '', account: 'all', membership: 'all', rank: '' };
+  let memberFilters = { ...emptyFilters };
+  const accountPages = [{ offset: 0, cursor: null }];
+  let openMemberId = '';
   const passwordResets = new Map();
   let paintPasswordResets = () => {};
   const memberWrites = { note: new Set(), toggle: new Set() };
   let paintMemberWrites = () => {};
   async function membersTab(box, pass = drawPass) {
-    const query = memberSearch;
-    const exact = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/.test(query);
-    const accountOnly = Boolean(query) && !exact;
-    const memberOffset = memberPages[memberPages.length - 1], accountOffset = accountPages[accountPages.length - 1];
-    const [data, accounts] = await Promise.all([
-      accountOnly ? Promise.resolve({ items: [], hasMore: false }) : get('admin-members', { ...(query ? { q: query } : {}), offset: memberOffset, limit: 20 }),
-      get('admin-accounts', { ...(query ? { q: query } : {}), active: 1, limit: 20, offset: accountOffset }),
-    ]);
+    const { offset, cursor } = accountPages[accountPages.length - 1];
+    const accounts = await get('admin-accounts', { ...memberFilters, offset, ...(cursor == null ? {} : { cursor }), limit: 20 });
     if (!box.isConnected || pass !== drawPass) return;
-    const rows = data.items.filter((row) => row.verified);
-    const broken = data.items.length - rows.length;
-    const accountRows = accounts.items ?? [];
-    const active = row => !row.revokedAt && (!row.expiresAt || Date.parse(row.expiresAt) > Date.now());
-    const trash = await get('admin-trash-counts').catch(() => null);
-    if (!box.isConnected || pass !== drawPass) return;
-    const countOf = (bucket) => (bucket ? `${bucket.more ? `${bucket.count}+` : bucket.count} 条` : '没数');
-    const pager = (kind, page, offset, count, unit) => `<div class="row" style="gap:10px;flex-wrap:wrap" aria-label="${kind === 'm' ? '会员记录' : '注册账号'}翻页">
-      <button class="btn btn-sm" type="button" id="${kind}-prev"${offset ? '' : ' disabled'}>上一页</button>
-      <span class="tiny dim">${count ? `第 ${offset + 1}–${offset + count} ${unit}` : '本页没有记录'}${page.hasMore ? '，后面还有' : ''}</span>
-      <button class="btn btn-sm" type="button" id="${kind}-next"${page.hasMore ? '' : ' disabled'}>下一页</button></div>`;
-    box.innerHTML = `
-      <section class="panel stack">
-        <div class="section-title"><h2 id="m-results-title" tabindex="-1">会员名单</h2>
-          <p class="tiny dim">「撤销」只停这一条权益，账号还能登录；「停用账号」让账号立即无法登录、正在播放的也会中断，权益原样保留，恢复即还原。转卖和共享账号用这个。</p></div>
-        <form class="row" id="m-search" style="align-items:flex-end;gap:10px">
-          <div class="field" style="flex:1 1 260px"><label for="m-q">查找（完整邮箱，或备注、买家 QQ 的一部分）</label>
-            <input class="input mono" id="m-q" name="q" maxlength="120" placeholder="user@example.com 或备注里的词" value="${esc(memberSearch)}" /></div>
-          <button class="btn" type="submit">查找</button>
-          ${memberSearch ? '<button class="btn btn-ghost" type="button" id="m-clear">清空</button>' : ''}
-        </form>
-        <div id="m-query-status" class="tiny dim" role="status" aria-live="polite"></div>
-        ${accountOnly ? '<div class="note note-warn">备注、QQ 和半截邮箱只查下方注册账号，不显示未筛选的会员名单。找到买家后，用完整邮箱查他的会员记录。</div>' : `<p class="tiny dim">本页已核验 ${rows.length} 条权益：${rows.filter(active).length} 条未到期，${rows.filter(row => !active(row)).length} 条已到期或撤销。这是本页记录数，不是全站会员人数。</p>`}
-        <p class="tiny dim">回收站里：停用账号 ${countOf(trash?.accounts)}、撤销的会员权益 ${countOf(trash?.memberships)}、作废或冻结的码 ${countOf(trash?.keys)}、取消的单 ${countOf(trash?.requests)}。<a href="/admin#trash" data-link>去回收站</a></p>
-        ${broken > 0 ? `<div class="note note-bad">有 ${broken} 条记录的签名与后台不一致，已按无效处理。</div>` : ''}
-        ${accountOnly ? '' : rows.length === 0 ? `<p class="dim">${query ? `完整邮箱「${esc(query)}」在本页没有会员记录。` : '本页没有会员记录。'}</p>` : `
-        <div class="table-wrap"><table class="table">
-          <thead><tr><th>邮箱</th><th>档位</th><th>等级</th><th>到期</th><th>剩余</th><th>来源</th><th>备注（只有后台可见）</th><th></th></tr></thead>
-          <tbody>${rows.map((row) => `<tr>
-            <td class="tiny"><span data-member-note="${esc(row.user.id)}"${row.note ? '' : ' hidden'}>${esc(row.note)}</span><br data-member-note-break="${esc(row.user.id)}"${row.note ? '' : ' hidden'}><span class="mono tiny dim">${esc(row.user.email)}</span>${row.disabledAt ? ' <span class="pill pill-bad">已停用</span>' : ''}${row.revokedAt ? ' <span class="pill">已撤销</span>' : ''}${!row.revokedAt && !active(row) ? ' <span class="pill">已到期</span>' : ''}
-              <div class="tiny dim stamps">${row.registeredAt ? `<span>注册 ${fmtDate(row.registeredAt)}</span>` : ''}${row.lastLoginAt ? `<span>· 最近登录 ${fmtDate(row.lastLoginAt)}</span>` : ''}</div></td>
-            <td class="nowrap">${esc(row.plan)}</td><td class="num">${esc(row.rank)}</td>
-            <td class="num tiny">${row.expiresAt ? fmtDate(row.expiresAt) : '永久'}
-              ${row.revokedAt ? '' : `<div class="days-edit">
-                <input class="input" type="number" inputmode="numeric" step="1" min="-3650" max="3650" data-days="${esc(row.id)}" placeholder="±天数" aria-label="给 ${esc(row.user.email)} 的这条会员加减有效天数（正数延长、负数缩短）" />
-                <button class="btn btn-sm btn-ghost" data-adjust="${esc(row.id)}">改到期</button></div>`}</td>
-            <td class="num tiny">${row.revokedAt ? '—' : remaining(row.expiresAt)}</td><td class="nowrap">${row.source === 'key' ? '激活码' : esc(row.source)}</td>
-            <td style="min-width:190px">
-              <input class="input" data-note-for="${esc(row.user.id)}" maxlength="200" placeholder="这是谁、为什么停用" value="${esc(row.note)}" />
-              <input class="input mono" style="margin-top:6px" data-qq-for="${esc(row.user.id)}" inputmode="numeric" maxlength="12" placeholder="买家 QQ" value="${esc(row.contactQq)}" /></td>
-            <td>${row.revokedAt ? '' : `<button class="btn btn-sm btn-danger" data-revoke="${esc(row.id)}" data-label="${esc(`「${row.plan}」等级 ${row.rank}，${row.expiresAt ? `${fmtDate(row.expiresAt)} 到期` : '不过期'}`)}">撤销</button>`}
-              <button class="btn btn-sm btn-ghost" data-user-toggle="${esc(row.user.id)}" data-disabled="${row.disabledAt ? 'yes' : 'no'}">${row.disabledAt ? '恢复账号' : '停用账号'}</button>
-              <button class="btn btn-sm btn-ghost" data-reset="${esc(row.user.id)}" data-email="${esc(row.user.email)}">重置密码</button>
-              <button class="btn btn-sm btn-ghost" type="button" data-activity="${esc(row.user.id)}" data-email="${esc(row.user.email)}" aria-controls="m-activity" aria-expanded="false">观看记录</button>
-              <button class="btn btn-sm btn-ghost" data-save-note="${esc(row.user.id)}">保存备注</button></td>
-          </tr>`).join('')}</tbody></table></div>`}
-        ${accountOnly ? '' : pager('m', data, memberOffset, data.items.length, '条')}
-        <div class="section-title"><h2 id="a-results-title" tabindex="-1">注册账号</h2>
-          <p class="tiny dim">包括已绑码和未绑码的账号，分页独立于上方会员记录。用完整邮箱查权益；要给买家出码，去「购买记录」记一笔。</p></div>
-        ${accounts.searchScope != null ? `<p class="tiny ${accounts.searchScopeCapped ? 'note note-warn' : 'dim'}">这次查找扫描了 ${Number(accounts.searchScope) || 0} 个账号${accounts.searchScopeCapped ? '，已到搜索范围上限；没找到时请用完整邮箱查找，不能据此判断没有注册' : ''}。</p>` : ''}
-        ${accountRows.length === 0 ? '<p class="dim">本次范围内没有匹配的注册账号。</p>' : `
-        <div class="table-wrap"><table class="table">
-          <thead><tr><th>邮箱</th><th>注册 / 最近登录</th><th>备注 · 买家 QQ</th><th></th></tr></thead>
-          <tbody>${accountRows.map((row) => `<tr>
-            <td class="mono tiny">${esc(row.user.email)}${row.isOwner ? ' <span class="pill pill-good">站长</span>' : ''}</td>
-            <td class="tiny num">${row.registeredAt ? fmtDate(row.registeredAt) : '—'}${row.lastLoginAt ? ` · ${fmtDate(row.lastLoginAt)}` : ' · 从未登录'}</td>
-            <td style="min-width:190px"><span class="tiny" data-account-note="${esc(row.user.id)}">${esc(row.note || '暂无备注')}${row.contactQq ? ` · QQ ${esc(row.contactQq)}` : ''}</span>
-              <input class="input" data-note-for="${esc(row.user.id)}" maxlength="200" placeholder="备注" value="${esc(row.note)}" />
-              <input class="input mono" style="margin-top:6px" data-qq-for="${esc(row.user.id)}" inputmode="numeric" maxlength="12" placeholder="买家 QQ" value="${esc(row.contactQq)}" /></td>
-            <td style="white-space:nowrap">
-              <button class="btn btn-sm btn-ghost" data-save-note="${esc(row.user.id)}">保存备注</button>
-              <button class="btn btn-sm btn-ghost" data-reset="${esc(row.user.id)}" data-email="${esc(row.user.email)}">重置密码</button>
-              <button class="btn btn-sm btn-ghost" data-user-toggle="${esc(row.user.id)}" data-disabled="no">停用账号</button></td>
-          </tr>`).join('')}</tbody></table></div>`}
-        ${pager('a', accounts, accountOffset, accountRows.length, '个账号')}
-        <div id="m-reset-results" class="stack" aria-live="polite"></div>
-        <div id="m-activity"></div>
-      </section>`;
+    box.innerHTML = directoryMarkup({ accounts, filters: memberFilters, page: accountPages.length, offset,
+      openId: openMemberId, viewerId: state.boot.viewer.id });
+    for (const details of box.querySelectorAll('.member-details')) {
+      details.addEventListener('toggle', () => {
+        if (!owns()) return;
+        const id = details.closest('[data-account-id]').dataset.accountId;
+        if (details.open) openMemberId = id;
+        else if (openMemberId === id) openMemberId = '';
+      });
+    }
     const owns = () => box.isConnected && pass === drawPass;
     function paintWrites() {
       if (!owns()) return;
@@ -1956,53 +1966,55 @@ export async function mountAdmin(view, { reloadBoot }) {
     }
     paintMemberWrites = paintWrites;
     paintWrites();
-    async function readMembers(kind = 'm', searching = false) {
-      if (!owns() && !searching) return;
+    const searchForm = box.querySelector('#m-search');
+    async function readMembers() {
+      if (!box.isConnected || !box.contains(searchForm)) return;
       const nextPass = ++drawPass;
       box.setAttribute('aria-busy', 'true');
-      box.querySelector('#m-query-status').textContent = '正在读取名单，旧列表暂不可操作。';
-      for (const button of box.querySelectorAll('[data-user-toggle],[data-save-note],[data-reset],[data-revoke],[data-adjust],#m-prev,#m-next,#a-prev,#a-next')) button.disabled = true;
+      box.querySelector('#m-query-status').textContent = '正在查找用户…';
+      for (const el of box.querySelectorAll('.member-card button, .member-pager button')) el.disabled = true;
       try {
         await membersTab(box, nextPass);
-        if (nextPass === drawPass && box.isConnected) { labelTableCells(box); box.querySelector('#' + kind + '-results-title')?.focus(); }
-      }
-      catch (error) {
+        if (nextPass === drawPass && box.isConnected) box.querySelector('#m-results-title')?.focus({ preventScroll: true });
+      } catch (error) {
         if (nextPass !== drawPass || !box.isConnected) return;
-        const status = box.querySelector('#m-query-status');
-        status.innerHTML = `<p>${esc(error.message)} 名单尚未更新，请重试读取后再操作；不会重新提交会员操作。</p><button class="btn btn-sm" type="button" id="m-read-retry">重试读取名单</button>`;
-        status.querySelector('#m-read-retry').addEventListener('click', () => {
-          if (nextPass === drawPass && box.isConnected) void readMembers(kind, true);
-        });
-        toast(error.message, 'bad');
-      }
-      finally { if (nextPass === drawPass && box.isConnected) box.setAttribute('aria-busy', 'false'); }
+        box.querySelector('#m-query-status').innerHTML = `${esc(error.message)} <button class="btn btn-sm" type="button" id="m-read-retry">重试读取</button>`;
+        box.querySelector('#m-read-retry').addEventListener('click', readMembers);
+      } finally { if (nextPass === drawPass && box.isConnected) box.setAttribute('aria-busy', 'false'); }
     }
-    for (const [kind, pages, page] of [['m', memberPages, data], ['a', accountPages, accounts]]) {
-      box.querySelector('#' + kind + '-prev')?.addEventListener('click', () => {
-        if (!owns() || pages.length < 2) return;
-        pages.pop(); void readMembers(kind);
-      });
-      box.querySelector('#' + kind + '-next')?.addEventListener('click', () => {
-        if (!owns() || !page.hasMore) return;
-        if (!Number.isSafeInteger(page.nextOffset) || page.nextOffset <= pages[pages.length - 1]) { toast('下一页位置没有推进，请重新读取后再试。', 'warn'); return; }
-        pages.push(page.nextOffset); void readMembers(kind);
+    function applyFilters() {
+      const values = new FormData(searchForm);
+      memberFilters = Object.fromEntries(Object.keys(emptyFilters).map(key => [key, String(values.get(key) ?? '').trim()]));
+      accountPages.splice(0, accountPages.length, { offset: 0, cursor: null });
+      openMemberId = ''; void readMembers();
+    }
+    searchForm.addEventListener('submit', event => { event.preventDefault(); applyFilters(); });
+    searchForm.addEventListener('change', event => { if (event.target.tagName === 'SELECT') applyFilters(); });
+    box.querySelector('#m-clear').addEventListener('click', () => {
+      for (const [key, value] of Object.entries(emptyFilters)) searchForm.elements.namedItem(key).value = value;
+      applyFilters();
+    });
+    box.querySelector('#a-prev')?.addEventListener('click', () => {
+      if (!owns() || accountPages.length < 2) return;
+      accountPages.pop(); void readMembers();
+    });
+    box.querySelector('#a-next')?.addEventListener('click', () => {
+      if (!owns() || !accounts.hasMore || !(accounts.nextOffset > offset)) return;
+      accountPages.push({ offset: accounts.nextOffset, cursor: accounts.nextCursor }); void readMembers();
+    });
+    for (const button of box.querySelectorAll('[data-copy-email]')) {
+      button.addEventListener('click', async () => { if (owns()) toast(await copyText(button.dataset.copyEmail) ? '已复制邮箱。' : '可选中卡片上的邮箱手动复制。'); });
+    }
+    for (const button of box.querySelectorAll('[data-register-sale]')) {
+      button.addEventListener('click', () => { if (owns()) { saleDraft = button.dataset.registerSale; void selectTab('requests'); } });
+    }
+    for (const button of box.querySelectorAll('[data-revoked-for]')) {
+      button.addEventListener('click', () => {
+        if (!owns()) return;
+        trashKind = 'memberships'; trashSearch = button.dataset.revokedFor; trashPage.memberships = 0;
+        void selectTab('trash');
       });
     }
-    const searchForm = box.querySelector('#m-search');
-    searchForm.addEventListener('submit', (event) => {
-      event.preventDefault();
-      // 读表单而不是读 currentTarget：异步处理器里的 currentTarget 会被回收。
-      if (!searchForm.isConnected || !box.contains(searchForm)) return;
-      memberSearch = new FormData(searchForm).get('q')?.toString().trim() ?? '';
-      memberPages.splice(0, memberPages.length, 0); accountPages.splice(0, accountPages.length, 0);
-      void readMembers('m', true);
-    });
-    box.querySelector('#m-clear')?.addEventListener('click', () => {
-      if (!searchForm.isConnected || !box.contains(searchForm)) return;
-      memberSearch = '';
-      memberPages.splice(0, memberPages.length, 0); accountPages.splice(0, accountPages.length, 0);
-      void readMembers('m', true);
-    });
     const resetHost = box.querySelector('#m-reset-results');
     function paintResets() {
       if (!owns()) return;
@@ -2163,8 +2175,8 @@ export async function mountAdmin(view, { reloadBoot }) {
         if (memberWrites.toggle.has(userId)) return;
         const disable = button.dataset.disabled === 'no';
         if (!confirm(disable
-          ? '停用这个账号？它会立即无法登录，正在播放的完整版也会中断。会员记录保留，恢复后继续有效。\n从「购买记录」里给它出过、还没兑换的激活码会一起冻结（恢复账号自动解冻）。'
-          : '恢复这个账号的登录和观看？被这次停用冻住的激活码会一起解冻。')) return;
+          ? `停用 ${button.dataset.email}？它会立即无法登录，正在播放的完整版也会中断。会员记录保留，恢复后继续有效。\n从「购买记录」里给它出过、还没兑换的激活码会一起冻结（恢复账号自动解冻）。`
+          : `恢复 ${button.dataset.email} 的登录和观看？被这次停用冻住的激活码会一起解冻。`)) return;
         memberWrites.toggle.add(userId);
         paintWrites();
         try {
@@ -2189,7 +2201,7 @@ export async function mountAdmin(view, { reloadBoot }) {
         if (!owns() || button.disabled) return;
         const id = button.dataset.saveNote;
         if (memberWrites.note.has(id)) return;
-        const row = button.closest('tr');
+        const row = button.closest('[data-account-id]');
         const note = row.querySelector(`[data-note-for="${id}"]`)?.value ?? '';
         const contactQq = row.querySelector(`[data-qq-for="${id}"]`)?.value ?? '';
         // No redraw: the owner may be mid-edit on another row, and these two inputs
@@ -2208,10 +2220,8 @@ export async function mountAdmin(view, { reloadBoot }) {
                 input.defaultValue = value;
               }
             }
-            for (const label of box.querySelectorAll(`[data-member-note="${id}"]`)) { label.textContent = saved.note; label.hidden = !saved.note; }
-            for (const line of box.querySelectorAll(`[data-member-note-break="${id}"]`)) line.hidden = !saved.note;
-            for (const label of box.querySelectorAll(`[data-account-note="${id}"]`)) label.textContent = `${saved.note || '暂无备注'}${saved.contactQq ? ` · QQ ${saved.contactQq}` : ''}`;
-            toast('这一行的备注已保存，只有后台看得到。同账号未修改的输入已同步；正在编辑的内容会保留。');
+            for (const label of box.querySelectorAll(`[data-account-note="${id}"]`)) label.textContent = `${saved.note || ''}${saved.contactQq ? `${saved.note ? ' · ' : ''}QQ ${saved.contactQq}` : ''}`;
+            toast('已保存这位用户的备注和 QQ。');
           }
         } catch (error) {
           if (owns()) toast(error.message, 'bad');
@@ -2237,57 +2247,29 @@ export async function mountAdmin(view, { reloadBoot }) {
         }
       });
     }
-    for (const button of box.querySelectorAll('[data-adjust]')) {
-      button.addEventListener('click', async () => {
-        if (!owns() || button.disabled) return;
-        const id = button.dataset.adjust;
-        const field = box.querySelector(`[data-days="${id}"]`);
-        const days = Number(field?.value.trim() ?? '');
-        if (!Number.isSafeInteger(days) || days === 0 || Math.abs(days) > 3650) {
-          field?.setAttribute('aria-invalid', 'true');
-          toast('天数要填 -3650 到 3650 之间的非零整数：正数延长，负数缩短，例如 30 或 -7。', 'warn');
-          field?.focus();
-          return;
-        }
-        field?.removeAttribute('aria-invalid');
-        if (!confirm(`本次${days > 0 ? '延长' : '缩短'}这条会员 ${Math.abs(days)} 天，确认提交？缩短到过去会立即过期。`)) return;
-        button.disabled = true;
-        try {
-          const result = await post('admin-member-adjust-days', { id, days });
-          const until = fmtDate(result.expiresAt);
-          // 缩短到过去是合法操作；这里只确认当前权益过期，不能推断其它权益是否仍有效。
-          toast(result.expiresAt <= new Date().toISOString()
-            ? `已改到 ${until}：这条权益已经过期；账号还能看什么，以其它有效权益为准。`
-            : `已${days > 0 ? '延长' : '缩短'} ${Math.abs(days)} 天，这条现在到 ${until} 到期。`);
-          if (pass === drawPass && box.isConnected) await draw();
-        } catch (error) {
-          toast(error.message, 'bad');
-        } finally {
-          button.disabled = false;
-        }
+    for (const row of accounts.items) {
+      const card = box.querySelector(`[data-account-id="${row.user.id}"]`);
+      bindEntitlementEditor(card, row, {
+        save: values => post('admin-account-entitlement', values),
+        refresh: async () => { toast('已更新会员等级和有效期'); if (owns()) await readMembers(); },
       });
     }
-  }
-
-  function remaining(expiresAt) {
-    if (!expiresAt) return '—';
-    const ms = Date.parse(expiresAt) - Date.now();
-    if (ms <= 0) return '已到期';
-    const days = Math.ceil(ms / 86400000);
-    return `${days} 天`;
   }
 
   // ---------------------------------------------------------------- requests
   async function requestsTab(box) {
     const [data, planRows] = await Promise.all([get('admin-requests', { limit: 100 }), get('admin-plans')]);
+    if (!box.isConnected) return;
     const plans = planRows.plans ?? [];
+    const email = saleDraft || '';
+    saleDraft = null;
     box.innerHTML = `
       <section class="panel stack">
         <div class="section-title"><h2>购买记录</h2>
           <p class="tiny dim">前台已经不让买家填表了。在 QQ 谈好后在这里记一笔，出码后点「已成交」。</p></div>
-        <form class="row" id="manual-request" style="gap:10px;align-items:flex-end">
+        <form class="row" id="manual-request"${email ? ' data-prefilled' : ''} style="gap:10px;align-items:flex-end">
           <div class="field" style="flex:1 1 220px"><label for="mr-email">买家邮箱</label>
-            <input class="input" id="mr-email" type="email" inputmode="email" autocomplete="off" placeholder="对方要用来注册的那个邮箱" /></div>
+            <input class="input" id="mr-email" value="${esc(email)}" type="email" inputmode="email" autocomplete="off" placeholder="对方要用来注册的那个邮箱" /></div>
           <div class="field" style="flex:1 1 150px"><label for="mr-plan">档位</label>
             <select class="input" id="mr-plan">${plans.map((plan) => `<option value="${esc(plan.code)}">${esc(plan.name)}</option>`).join('')}</select></div>
           <div class="field" style="flex:1 1 200px"><label for="mr-note">备注（选填）</label>
@@ -2601,6 +2583,7 @@ export async function mountAdmin(view, { reloadBoot }) {
     membership_revoke: '撤销了一条会员权益',
     membership_restore: '把一条撤销的会员权益重新生效',
     membership_adjust: '改了会员的有效天数',
+    account_entitlement: '调整了用户等级和有效期',
     user_disable: '停用了某个账号',
     user_enable: '恢复了某个账号',
     user_note: '保存了买家备注',
@@ -2673,6 +2656,10 @@ export async function mountAdmin(view, { reloadBoot }) {
   const auditAction = (row) => {
     const label = AUDIT_LABELS[row.action] ?? row.action;
     const detail = auditDetail(row);
+    if (row.action === 'account_entitlement') {
+      const term = (rank, end) => rank ? rank + ' 级 · ' + (end ? fmtDate(end) : '永久') : '普通用户';
+      return label + '，' + term(detail.fromRank, detail.from) + ' → ' + term(detail.rank, detail.to);
+    }
     if (row.action === 'membership_adjust' && Number.isFinite(Number(detail.days))) {
       const days = Number(detail.days);
       return `${label}：${days > 0 ? '+' : ''}${days} 天${detail.to ? `，到 ${fmtDate(detail.to)}` : ''}`;

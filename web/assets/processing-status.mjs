@@ -105,13 +105,13 @@ export function mountProcessingStatus(host, { onPickCover, onGoLibrary, confirma
     noticeText.textContent = `${fresh.length} 条处理已完成并自动收起，已发布的教学影像无需再次发布。可展开下方记录核对。`;
     confirmDone.textContent = `确认完成并收起（${fresh.length} 条）`;
     list.replaceChildren(...active.map(renderJob));
-    if (!active.length) list.append(element('p', 'tiny dim', '当前列表没有需要处理的任务。'));
+    if (!active.length) list.append(element('p', 'tiny dim', '暂无待处理的视频。'));
     // 保留 details 节点本身，轮询不改变管理员当前的展开状态。
     completedList.replaceChildren(...done.map(renderJob));
     history.hidden = done.length === 0; summary.textContent = `查看已完成记录（${done.length} 条）`;
     note.textContent = readError || (snapshot.enabled
       ? '补档会在服务器排队生成，无需重传原视频。已完成并发布的任务自动收起，已取消的任务不再显示。'
-      : '当前服务器未启用自动处理。上传已保存并加密，但不会自动生成多清晰度。');
+      : '自动转码未开启，视频会保留原画质。');
   }
 
   function renderJob(job) {
@@ -217,8 +217,10 @@ export function mountProcessingStatus(host, { onPickCover, onGoLibrary, confirma
     }
   }
 
+  const pane = host.closest('#admin-upload-pane');
+  const paused = () => document.visibilityState === 'hidden' || Boolean(pane?.hidden);
   async function load() {
-    if (!live() || document.visibilityState === 'hidden') return;
+    if (!live() || paused()) return;
     const version = ++sequence;
     clearTimeout(poll); clearTimeout(timeout); controller?.abort();
     const readController = new AbortController(); controller = readController;
@@ -249,12 +251,13 @@ export function mountProcessingStatus(host, { onPickCover, onGoLibrary, confirma
   }
 
   const visible = () => {
-    if (document.visibilityState === 'hidden') { ++sequence; clearTimeout(poll); clearTimeout(timeout); controller?.abort(); }
+    if (paused()) { ++sequence; clearTimeout(poll); clearTimeout(timeout); controller?.abort(); }
     else void load();
   };
   const changed = () => { if (live()) void load(); };
   document.addEventListener('boxvault-uploaded', changed);
   document.addEventListener('visibilitychange', visible);
+  pane?.addEventListener('upload-pane-shown', visible);
   const observer = new MutationObserver(() => { if (!host.isConnected) dispose(); });
   observer.observe(document.body, { childList: true, subtree: true });
   function dispose() {
@@ -262,6 +265,7 @@ export function mountProcessingStatus(host, { onPickCover, onGoLibrary, confirma
     dead = true; ++sequence; controller?.abort(); clearTimeout(poll); clearTimeout(timeout); observer.disconnect();
     for (const entry of requests.values()) entry.controller?.abort();
     requests.clear();
+    pane?.removeEventListener('upload-pane-shown', visible);
     document.removeEventListener('boxvault-uploaded', changed); document.removeEventListener('visibilitychange', visible);
   }
   void load(); return dispose;
