@@ -324,6 +324,7 @@ async function main() {
     await buyer.goto(origin + '/library?q=sample');
     await buyer.locator('.screening-card').filter({ hasText: 'sample' }).click();
     await buyer.locator('.watch-heading h1').filter({ hasText: 'sample' }).waitFor();
+    assert.ok(await buyer.evaluate(() => window.scrollY <= 1), 'opening a video starts at the top');
     const reel = buyer.locator('#reel');
     await reel.evaluate(video => { void video.play().catch(() => {}); });
     await buyer.waitForFunction(() => document.querySelector('#reel')?.currentTime > 0, null, { timeout: 10000 });
