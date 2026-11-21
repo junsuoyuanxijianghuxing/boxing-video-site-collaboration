@@ -145,6 +145,7 @@ export function toast(message, kind = 'note') {
 export function go(path, { replace = false } = {}) {
   if (replace) history.replaceState({ path }, '', path);
   else history.pushState({ path }, '', path);
+  if (location.pathname.startsWith('/v/')) window.scrollTo({ top: 0, behavior: 'instant' });
   void render();
 }
 
