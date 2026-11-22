@@ -44,7 +44,7 @@ export function directoryMarkup({ accounts, filters, page, offset, openId, viewe
       <datalist id="m-ranks"><option value="0">普通用户</option>${ranks.map(n => `<option value="${n}">${n} 级</option>`).join('')}</datalist>
       <div class="member-filter-actions"><button class="btn btn-primary" type="submit">查找</button><button type="button" class="btn btn-ghost" id="m-clear"${filtered ? '' : ' disabled'}>清空筛选</button></div>
     </form>
-    <p id="m-query-status" class="tiny dim" role="status">${accounts.items.length ? `第 ${page} 页 · 第 ${offset + 1}–${offset + accounts.items.length} 位用户` : '0 位符合条件的用户'}</p>
+    <p id="m-query-status" tabindex="-1" class="tiny dim" role="status">${accounts.items.length ? `第 ${page} 页 · 第 ${offset + 1}–${offset + accounts.items.length} 位用户` : '0 位符合条件的用户'}</p>
     <div class="member-list">${
       accounts.items.map(row => memberCard(row, openId, viewerId)).join('') ||
       '<p>没有找到符合条件的用户。可换一个关键词，或清空筛选。</p>'
