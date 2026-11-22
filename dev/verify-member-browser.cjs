@@ -161,6 +161,31 @@ async function main() {
         buyerEmail
       );
     };
+    const accountFilter = admin.locator('#m-search select[name=account]');
+    await accountFilter.focus();
+    await accountFilter.selectOption('active');
+    await admin.waitForFunction(() => document.activeElement?.name === 'account' && document.querySelector('#m-q')?.closest('[aria-busy]')?.getAttribute('aria-busy') !== 'true');
+    const accountRequest = url => url.searchParams.get('a') === 'admin-accounts';
+    let releaseSearch;
+    const searchGate = new Promise(resolve => { releaseSearch = resolve; });
+    await admin.route(accountRequest, async route => {
+      await searchGate;
+      await route.continue();
+    }, { times: 1 });
+    const pendingSearch = admin.waitForRequest(r => accountRequest(new URL(r.url())));
+    await admin.locator('#m-search select[name=membership]').selectOption('active');
+    await pendingSearch;
+    const query = admin.locator('#m-q');
+    await query.fill('qa-bu');
+    await query.press('ArrowLeft');
+    const finishedSearch = admin.waitForResponse(r => accountRequest(new URL(r.url())));
+    releaseSearch();
+    await finishedSearch;
+    await admin.waitForFunction(() => {
+      const input = document.querySelector('#m-q');
+      return document.querySelector('#m-q')?.closest('[aria-busy]')?.getAttribute('aria-busy') === 'false'
+        && document.activeElement === input && input.value === 'qa-bu' && input.selectionStart === 4;
+    });
     await search('qa-buyer');
     const card = admin.locator('.member-card');
     assert.match(await card.locator('.member-badges').innerText(), /2 级会员/);
@@ -173,6 +198,7 @@ async function main() {
     await card.locator('[data-entitlement-form] [type=submit]').click();
     assert.equal((await saved).status(), 200);
     await card.locator('.member-badges').filter({ hasText: '1 级会员' }).waitFor();
+    assert.ok(await card.locator('[data-edit-entitlement]').evaluate(el => document.activeElement === el));
     await buyer.reload();
     await buyer.locator('#account-rank').filter({ hasText: '1' }).waitFor();
     assert.ok(
@@ -339,6 +365,40 @@ async function main() {
     await buyer.getByRole('heading', { name: '这条视频暂无试看' }).waitFor();
     assert.equal(await buyer.locator('#reel').getAttribute('src'), null);
     console.log('PASS 手机切换后台；草稿发布、播放、试看结束和返回片库；无可用试看时显示会员入口');
+    await buyer.goto(origin + '/library?section=all&sort=oldest&duration=short&page=3&per=6');
+    const laterCard = buyer.locator('#kind-list .screening-card').nth(3);
+    await laterCard.waitFor();
+    await laterCard.evaluate(el => el.scrollIntoView({ block: 'center' }));
+    const cardPath = await laterCard.getAttribute('href');
+    const catalogUrl = buyer.url();
+    const topBefore = await laterCard.evaluate(el => el.getBoundingClientRect().top);
+    await laterCard.focus();
+    await buyer.keyboard.press('Enter');
+    const returnLink = buyer.locator('.watch-back');
+    await returnLink.waitFor();
+    assert.equal(new URL(await returnLink.getAttribute('href'), origin).href, catalogUrl);
+    await buyer.reload();
+    await returnLink.click();
+    const isBackAtCard = () => buyer.waitForFunction(path =>
+      document.activeElement?.matches('#kind-list .screening-card') && document.activeElement.getAttribute('href') === path,
+      cardPath, { timeout: 5000 });
+    await isBackAtCard();
+    assert.equal(buyer.url(), catalogUrl);
+    assert.ok(Math.abs(await laterCard.evaluate(el => el.getBoundingClientRect().top) - topBefore) < 6);
+    await buyer.keyboard.press('Enter');
+    await returnLink.waitFor();
+    await buyer.goBack();
+    await isBackAtCard();
+    await buyer.locator('#library-pagination').getByRole('link', { name: '下一页' }).click();
+    assert.equal(new URL(buyer.url()).searchParams.get('page'), '4');
+    const position = await buyer.locator('#library-result-count').evaluate(el => ({
+      focused: el === document.activeElement, top: el.getBoundingClientRect().top,
+      toolbar: document.querySelector('.library-browse-bar').getBoundingClientRect().bottom,
+    }));
+    assert.ok(position.focused && position.top >= position.toolbar - 1);
+    await buyer.goto(origin + cardPath);
+    assert.equal(await returnLink.getAttribute('href'), '/library');
+    console.log('PASS 手机第三页筛选、键盘看片、播放器刷新、返回按钮和浏览器后退均回到原视频；独立视频链接返回片库');
     assert.deepEqual(errors, []);
     console.log(
       'PASS 140 条目录跨页筛选及排序、无匹配、直接链接与刷新；360px、390px 双栏自动堆叠，片库及后台无横向溢出'
