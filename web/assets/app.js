@@ -142,9 +142,10 @@ export function toast(message, kind = 'note') {
   window.setTimeout(() => box.remove(), kind === 'bad' ? 7000 : 4200);
 }
 
-export function go(path, { replace = false } = {}) {
-  if (replace) history.replaceState({ path }, '', path);
-  else history.pushState({ path }, '', path);
+export function go(path, { replace = false, entry = {} } = {}) {
+  const next = { ...entry, path };
+  if (replace) history.replaceState(next, '', path);
+  else history.pushState(next, '', path);
   if (location.pathname.startsWith('/v/')) window.scrollTo({ top: 0, behavior: 'instant' });
   void render();
 }
@@ -153,7 +154,7 @@ export function go(path, { replace = false } = {}) {
 // behaving like links (middle click, copy address).
 document.addEventListener('click', (event) => {
   const anchor = event.target.closest?.('a[data-link]');
-  if (!anchor || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+  if (!anchor || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.defaultPrevented || event.button !== 0) return;
   const url = new URL(anchor.href, location.origin);
   if (url.origin !== location.origin) return;
   event.preventDefault();
@@ -162,7 +163,27 @@ document.addEventListener('click', (event) => {
     location.hash = url.hash;
     return;
   }
-  go(url.pathname + url.search + url.hash);
+  const path = url.pathname + url.search + url.hash;
+  const from = history.state?.fromCatalog;
+  if (anchor.hasAttribute('data-catalog-return') && from?.url === path) {
+    if (from.direct) history.back();
+    else go(path, { entry: { librarySpot: from.spot } });
+    return;
+  }
+  if (url.pathname.startsWith('/v/')) {
+    if (anchor.matches('#kind-list .screening-card')) {
+      const spot = { path: anchor.pathname, top: anchor.getBoundingClientRect().top };
+      const url = location.pathname + location.search + location.hash;
+      history.replaceState({ ...history.state, librarySpot: spot }, '');
+      go(path, { entry: { fromCatalog: { url, spot, direct: true } } });
+      return;
+    }
+    if (location.pathname.startsWith('/v/') && from) {
+      go(path, { entry: { fromCatalog: { ...from, direct: false } } });
+      return;
+    }
+  }
+  go(path);
 });
 
 window.addEventListener('popstate', () => {
@@ -334,7 +355,9 @@ async function render() {
   if (path.startsWith('/v/')) {
     const { mountPlayer } = await import('./player.js');
     if (!isCurrent(pass)) return;
-    await mountPlayer(main, { id: decodeURIComponent(path.slice(3)), isCurrent: () => isCurrent(pass) });
+    await mountPlayer(main, { id: decodeURIComponent(path.slice(3)), isCurrent: () => isCurrent(pass),
+      catalogUrl: history.state?.fromCatalog?.url });
+    if (isCurrent(pass)) main.focus({ preventScroll: true });
     return;
   }
   const view = VIEWS[path];
