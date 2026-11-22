@@ -6,7 +6,9 @@ import { mountPlayerSeries } from './public-series.mjs';
 import { mountVideoParts } from './video-parts.mjs';
 import { copyText } from './clipboard.mjs';
 
-export async function mountPlayer(view, { id, isCurrent = () => view.isConnected }) {
+export async function mountPlayer(view, { id, catalogUrl, isCurrent = () => view.isConnected }) {
+  const returnPath = typeof catalogUrl === 'string' && /^\/(?:library\/?)?(?:[?#]|$)/.test(catalogUrl) ? catalogUrl : '/library';
+  const backLabel = returnPath === '/library' ? '返回视频库' : '返回浏览结果';
   let session;
   // `?as=<rank>` is an owner-only preview switch: an admin otherwise always resolves to the
   // full file, so the tier gate is invisible to the one person who configures it.
@@ -20,7 +22,7 @@ export async function mountPlayer(view, { id, isCurrent = () => view.isConnected
     view.innerHTML = `<div class="wrap stack" style="max-width:620px">
       <h1>${error.code === 'video_not_found' ? '这条视频不存在或已下架' : '暂时打不开这条视频'}</h1>
       <p class="dim">${esc(error.message)}</p>
-      <p><a class="btn" href="/library" data-link>回到教学影像库</a> ${error.code === 'login_required' ? '<a class="btn" href="/login" data-link>登录观看</a>' : ''}</p>
+      <p><a class="btn" href="${esc(returnPath)}" data-catalog-return data-link>${backLabel}</a> ${error.code === 'login_required' ? '<a class="btn" href="/login" data-link>登录观看</a>' : ''}</p>
     </div>`;
     return;
   }
@@ -38,7 +40,7 @@ export async function mountPlayer(view, { id, isCurrent = () => view.isConnected
   const contactQq = state.boot?.settings?.contact_qq || '';
   view.innerHTML = `
     <div class="player-shell"><div class="player">
-      <a class="watch-back" href="/library" data-link><span aria-hidden="true">←</span> 返回视频库</a>
+      <a class="watch-back" href="${esc(returnPath)}" data-catalog-return data-link><span aria-hidden="true">←</span> ${backLabel}</a>
       <div class="watch-screen">
       <div class="stage" id="stage">
         <video id="reel"${isPreview && !noPreview ? ` src="${esc(session.mediaUrl)}"` : ''}${session.posterUrl ? ` poster="${esc(session.posterUrl)}"` : ''}
@@ -70,7 +72,7 @@ export async function mountPlayer(view, { id, isCurrent = () => view.isConnected
               <button class="btn btn-primary" type="button" id="stage-error-retry">重新加载</button>
               <button class="btn" type="button" id="stage-error-copy">复制页面链接</button>
               <a class="btn" id="stage-error-login" href="/login" data-link hidden>重新登录</a>
-              <a class="btn" href="/library" data-link>返回视频库</a>
+              <a class="btn" href="${esc(returnPath)}" data-catalog-return data-link>${backLabel}</a>
             </div>
             <p class="tiny dim"${contactQq ? '' : ' hidden'}>仍然无法播放？联系 QQ <span class="mono">${esc(contactQq)}</span>，说明教学影像名称和无法播放的位置。</p>
           </div>
