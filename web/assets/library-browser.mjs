@@ -112,16 +112,44 @@ export function mountLibraryBrowser(root, { pages, boot, mergeItems, issueNumber
   const hasMore = () => ['live', 'anime'].some(key => pages[key]?.hasMore);
   const wall = mountLiquidCoverWall(node('#library-feature'), { items: publicPublicationItems(mergeItems(pages), pages.latest?.items), posterUrlFor });
 
+  let returnSpot = history.state?.librarySpot;
+  function restoreCard() {
+    if (!returnSpot) return;
+    const spot = returnSpot;
+    returnSpot = null;
+    requestAnimationFrame(() => {
+      if (!alive() || (document.activeElement !== document.body && !document.activeElement?.matches('main'))) return;
+      const card = [...results.querySelectorAll('a.screening-card')].find(link => link.pathname === spot.path);
+      if (!card) { moveToResults(); return; }
+      const minTop = Math.min(resultsInset(), innerHeight / 2);
+      const savedTop = Number.isFinite(spot.top) ? spot.top : minTop;
+      const top = Math.max(minTop, Math.min(savedTop, innerHeight - 64));
+      window.scrollBy({ top: card.getBoundingClientRect().top - top, behavior: 'instant' });
+      card.focus({ preventScroll: true });
+    });
+  }
+
   function remember(push = false) {
     remembered = { ...ui };
     const url = libraryUrl(ui);
     const entry = { ...(history.state || {}), libraryUi: { ...ui } };
+    if (url !== location.pathname + location.search + location.hash) {
+      delete entry.librarySpot;
+      returnSpot = null;
+    }
     if (push && url !== location.pathname + location.search + location.hash) history.pushState(entry, '', url);
     else history.replaceState(entry, '', url);
   }
+  function resultsInset() {
+    const bar = node('.library-browse-bar');
+    const style = getComputedStyle(bar);
+    if (style.position === 'sticky') return (parseFloat(style.top) || 0) + bar.offsetHeight + 8;
+    return (document.querySelector('header.bar')?.offsetHeight || 0) + 8;
+  }
   function moveToResults() {
-    node('#library-result-count').focus({ preventScroll: true });
-    node('#teaching-library').scrollIntoView({ block: 'start', behavior: 'auto' });
+    const count = node('#library-result-count');
+    count.focus({ preventScroll: true });
+    window.scrollBy({ top: count.getBoundingClientRect().top - resultsInset(), behavior: 'instant' });
     hydratePosters();
   }
   const pageLink = (page, text, extra = '') => `<a class="library-page-link" href="${esc(libraryUrl({ ...ui, page }))}" data-display-page="${page}" ${extra}>${text}</a>`;
@@ -250,6 +278,7 @@ export function mountLibraryBrowser(root, { pages, boot, mergeItems, issueNumber
     hydratePosters();
     wall.update(publications);
     if (scroll) moveToResults();
+    else restoreCard();
   }
 
   async function loadMore() {
