@@ -1941,12 +1941,27 @@ export async function mountAdmin(view, { reloadBoot }) {
   let paintPasswordResets = () => {};
   const memberWrites = { note: new Set(), toggle: new Set() };
   let paintMemberWrites = () => {};
-  async function membersTab(box, pass = drawPass) {
+  async function membersTab(box, pass = drawPass, focusSelector = '') {
     const { offset, cursor } = accountPages[accountPages.length - 1];
     const accounts = await get('admin-accounts', { ...memberFilters, offset, ...(cursor == null ? {} : { cursor }), limit: 20 });
     if (!box.isConnected || pass !== drawPass) return;
+    const oldForm = box.querySelector('#m-search');
+    const active = document.activeElement;
+    const canRestoreFocus = focusSelector && (box.contains(active) || active === document.body);
+    const typed = oldForm && ['q', 'rank'].map(name => oldForm.elements.namedItem(name))
+      .filter(input => input.value !== String(memberFilters[input.name]));
+    const editing = typed && typed.find(input => input === active);
+    const selection = editing?.type === 'search' ? [editing.selectionStart, editing.selectionEnd] : null;
     box.innerHTML = directoryMarkup({ accounts, filters: memberFilters, page: accountPages.length, offset,
       openId: openMemberId, viewerId: state.boot.viewer.id });
+    const freshForm = box.querySelector('#m-search');
+    for (const input of typed || []) freshForm.elements.namedItem(input.name).value = input.value;
+    if (canRestoreFocus) {
+      const target = editing ? freshForm.elements.namedItem(editing.name)
+        : box.querySelector(focusSelector) || box.querySelector('#m-query-status');
+      target.focus({ preventScroll: true });
+      if (selection) target.setSelectionRange(...selection);
+    }
     for (const details of box.querySelectorAll('.member-details')) {
       details.addEventListener('toggle', () => {
         if (!owns()) return;
@@ -1967,32 +1982,31 @@ export async function mountAdmin(view, { reloadBoot }) {
     paintMemberWrites = paintWrites;
     paintWrites();
     const searchForm = box.querySelector('#m-search');
-    async function readMembers() {
+    async function readMembers(focusSelector = '#m-query-status') {
       if (!box.isConnected || !box.contains(searchForm)) return;
       const nextPass = ++drawPass;
       box.setAttribute('aria-busy', 'true');
       box.querySelector('#m-query-status').textContent = '正在查找用户…';
       for (const el of box.querySelectorAll('.member-card button, .member-pager button')) el.disabled = true;
       try {
-        await membersTab(box, nextPass);
-        if (nextPass === drawPass && box.isConnected) box.querySelector('#m-results-title')?.focus({ preventScroll: true });
+        await membersTab(box, nextPass, focusSelector);
       } catch (error) {
         if (nextPass !== drawPass || !box.isConnected) return;
         box.querySelector('#m-query-status').innerHTML = `${esc(error.message)} <button class="btn btn-sm" type="button" id="m-read-retry">重试读取</button>`;
-        box.querySelector('#m-read-retry').addEventListener('click', readMembers);
+        box.querySelector('#m-read-retry').addEventListener('click', () => void readMembers(focusSelector));
       } finally { if (nextPass === drawPass && box.isConnected) box.setAttribute('aria-busy', 'false'); }
     }
-    function applyFilters() {
+    function applyFilters(focusSelector) {
       const values = new FormData(searchForm);
       memberFilters = Object.fromEntries(Object.keys(emptyFilters).map(key => [key, String(values.get(key) ?? '').trim()]));
       accountPages.splice(0, accountPages.length, { offset: 0, cursor: null });
-      openMemberId = ''; void readMembers();
+      openMemberId = ''; void readMembers(focusSelector);
     }
     searchForm.addEventListener('submit', event => { event.preventDefault(); applyFilters(); });
-    searchForm.addEventListener('change', event => { if (event.target.tagName === 'SELECT') applyFilters(); });
+    searchForm.addEventListener('change', event => { if (event.target.tagName === 'SELECT') applyFilters(`#m-search [name="${CSS.escape(event.target.name)}"]`); });
     box.querySelector('#m-clear').addEventListener('click', () => {
       for (const [key, value] of Object.entries(emptyFilters)) searchForm.elements.namedItem(key).value = value;
-      applyFilters();
+      applyFilters('#m-q');
     });
     box.querySelector('#a-prev')?.addEventListener('click', () => {
       if (!owns() || accountPages.length < 2) return;
@@ -2251,7 +2265,7 @@ export async function mountAdmin(view, { reloadBoot }) {
       const card = box.querySelector(`[data-account-id="${row.user.id}"]`);
       bindEntitlementEditor(card, row, {
         save: values => post('admin-account-entitlement', values),
-        refresh: async () => { toast('已更新会员等级和有效期'); if (owns()) await readMembers(); },
+        refresh: async () => { toast('已更新会员等级和有效期'); if (owns()) await readMembers(`[data-account-id="${CSS.escape(row.user.id)}"] [data-edit-entitlement]`); },
       });
     }
   }
