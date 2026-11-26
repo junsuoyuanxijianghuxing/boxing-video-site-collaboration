@@ -110,6 +110,27 @@ async function main() {
       await p.waitForURL(email === adminEmail ? '**/admin' : '**/account');
     };
     await Promise.all([signUp(admin, adminEmail), signUp(buyer, buyerEmail)]);
+    const visitor = await browser.newPage();
+    try {
+      await visitor.goto(origin + '/library');
+      const firstTitle = visitor.locator('#kind-list .screening-card h3').first();
+      await firstTitle.waitFor();
+      for (const width of [360, 390, 1300]) {
+        await visitor.setViewportSize({ width, height: 844 });
+        assert.ok(await firstTitle.evaluate(el => {
+          const box = el.getBoundingClientRect();
+          return box.top >= 0 && box.bottom <= innerHeight
+            && document.documentElement.scrollWidth <= innerWidth + 1
+            && getComputedStyle(document.documentElement).colorScheme === 'light';
+        }), 'public video title visible on the first screen at ' + width);
+      }
+      await visitor.setViewportSize({ width: 390, height: 844 });
+      await visitor.locator('#site-menu-toggle').click();
+      await visitor.locator('#ws-search:visible').click();
+      await visitor.keyboard.press('Escape');
+    } finally {
+      await visitor.close();
+    }
     const get = async (p, action, params = {}) => {
       const url = new URL('/functions/v1/app', origin);
       url.search = new URLSearchParams({ a: action, ...params });
@@ -319,7 +340,7 @@ async function main() {
     assert.equal(await buyer.locator('#library-sort').inputValue(), 'oldest');
     assert.equal(await buyer.locator('#library-period').inputValue(), '1');
     await admin.setViewportSize({ width: 390, height: 844 });
-    await nav('members');
+    await admin.locator('#admin-section-picker').selectOption('members');
     await admin.locator('#admin-pair').click();
     await admin.locator('.member-card [data-edit-entitlement]').first().click();
     for (const width of [390, 360]) {
