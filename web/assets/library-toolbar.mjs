@@ -29,7 +29,7 @@ export function mountLibraryToolbar(root) {
   actions.className = 'library-filter-actions';
   const groups = [
     ['观看条件', ['library-tier', 'library-access']],
-    ['内容条件', ['library-duration', 'library-progress']],
+    ['学习进度', ['library-progress']],
   ];
   const labels = [...panel.children].filter(child => child.tagName === 'LABEL');
   for (const [title, ids] of groups) {

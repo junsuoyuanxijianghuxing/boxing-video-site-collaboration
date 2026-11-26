@@ -2,7 +2,7 @@
 export const publicationRanges = [['1', '近 1 天'], ['3', '近 3 天'], ['7', '近 7 天'], ['30', '近 30 天'], ['all', '全部日期']];
 const dayMs = 86400000;
 const dateParts = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' });
-const dateTime = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+const dateTime = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
 
 export const publicationStamp = item => typeof item?.publishedAt === 'string' ? Date.parse(item.publishedAt) : NaN;
 export const isPublicLesson = item => Boolean(item?.id) && item.status === 'published' && item.authentic !== false && item.access !== 'hidden';

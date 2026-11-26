@@ -3,7 +3,6 @@ import { mountShellNav } from './shell-nav.js';
 import { lessonLibraryMarkup } from './lesson-layout.mjs';
 import { mountLibraryBrowser } from './library-browser.mjs';
 import { lessonCardMarkup, previewLabel } from './lesson-card.mjs';
-import { teachingCopy } from './teaching-copy.mjs';
 import { isWatchedToEnd } from './play-progress.mjs';
 import { setPosterSrc } from './poster-cache.mjs';
 import { routeOf } from './route-state.mjs';
@@ -143,9 +142,11 @@ export function toast(message, kind = 'note') {
   window.setTimeout(() => box.remove(), kind === 'bad' ? 7000 : 4200);
 }
 
-export function go(path, { replace = false } = {}) {
-  if (replace) history.replaceState({ path }, '', path);
-  else history.pushState({ path }, '', path);
+export function go(path, { replace = false, entry = {} } = {}) {
+  const next = { ...entry, path };
+  if (replace) history.replaceState(next, '', path);
+  else history.pushState(next, '', path);
+  if (location.pathname.startsWith('/v/')) window.scrollTo({ top: 0, behavior: 'instant' });
   void render();
 }
 
@@ -153,7 +154,7 @@ export function go(path, { replace = false } = {}) {
 // behaving like links (middle click, copy address).
 document.addEventListener('click', (event) => {
   const anchor = event.target.closest?.('a[data-link]');
-  if (!anchor || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+  if (!anchor || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.defaultPrevented || event.button !== 0) return;
   const url = new URL(anchor.href, location.origin);
   if (url.origin !== location.origin) return;
   event.preventDefault();
@@ -162,10 +163,33 @@ document.addEventListener('click', (event) => {
     location.hash = url.hash;
     return;
   }
-  go(url.pathname + url.search + url.hash);
+  const path = url.pathname + url.search + url.hash;
+  const from = history.state?.fromCatalog;
+  if (anchor.hasAttribute('data-catalog-return') && from?.url === path) {
+    if (from.direct) history.back();
+    else go(path, { entry: { librarySpot: from.spot } });
+    return;
+  }
+  if (url.pathname.startsWith('/v/')) {
+    if (anchor.matches('#kind-list .screening-card')) {
+      const spot = { path: anchor.pathname, top: anchor.getBoundingClientRect().top };
+      const url = location.pathname + location.search + location.hash;
+      history.replaceState({ ...history.state, librarySpot: spot }, '');
+      go(path, { entry: { fromCatalog: { url, spot, direct: true } } });
+      return;
+    }
+    if (location.pathname.startsWith('/v/') && from) {
+      go(path, { entry: { fromCatalog: { ...from, direct: false } } });
+      return;
+    }
+  }
+  go(path);
 });
 
-window.addEventListener('popstate', () => void render());
+window.addEventListener('popstate', () => {
+  if (routeOf(location.pathname) === '/admin' && main.querySelector('#admin-panes')) return;
+  void render();
+});
 
 // 外壳导航（工作区切换器 + 菜单内搜索）和弧形快捷菜单：每次 renderNav 都会跑到这里，
 // 但监听器只能挂一次，所以按"这一屏该给哪些入口"签个名，没变就不重建。
@@ -199,7 +223,7 @@ function renderNav() {
     if (settings.contact_qq) footQq.href = `https://wpa.qq.com/msgrd?v=3&uin=${encodeURIComponent(settings.contact_qq)}&site=qoder&menu=yes`;
   }
   const promo = document.getElementById('foot-promo');
-  if (promo && settings.promo_line) promo.textContent = teachingCopy(settings.promo_line);
+  if (promo && settings.promo_line) promo.textContent = settings.promo_line;
   // Prices live in the database, so the footer has to read them from there too.
   // Left as static text it would keep advertising the old price after a change in
   // 后台 — the same drift the page title had.
@@ -331,7 +355,9 @@ async function render() {
   if (path.startsWith('/v/')) {
     const { mountPlayer } = await import('./player.js');
     if (!isCurrent(pass)) return;
-    await mountPlayer(main, { id: decodeURIComponent(path.slice(3)), isCurrent: () => isCurrent(pass) });
+    await mountPlayer(main, { id: decodeURIComponent(path.slice(3)), isCurrent: () => isCurrent(pass),
+      catalogUrl: history.state?.fromCatalog?.url });
+    if (isCurrent(pass)) main.focus({ preventScroll: true });
     return;
   }
   const view = VIEWS[path];
@@ -352,8 +378,8 @@ async function render() {
 export async function libraryView(view) {
   const boot = state.boot;
   view.innerHTML = lessonLibraryMarkup({
-    promo: esc(teachingCopy(boot.settings.promo_line || '')),
-    purchaseSteps: esc(teachingCopy(boot.settings.purchase_steps || DEFAULT_PURCHASE_STEPS)),
+    promo: esc(boot.settings.promo_line || ''),
+    purchaseSteps: esc(boot.settings.purchase_steps || DEFAULT_PURCHASE_STEPS),
   });
   const root = view.querySelector('.compact-library');
   let pages;
@@ -632,7 +658,7 @@ function authPanel(host, mode) {
       <form class="auth-card panel stack" id="auth-form" novalidate>
         <div class="section-title">
           <h2>注册或登录</h2>
-          <p class="tiny dim">注册免费，可先看所有教学影像的试看内容；激活码要绑在账号上，所以先有账号。</p>
+          <p class="tiny dim">注册后可兑换会员激活码，观看记录会保存在这个账号下。</p>
         </div>
         ${ended ? `<div class="note note-warn">${esc(ended)}</div>` : ''}
         <div class="row" style="gap:6px" role="group" aria-label="注册还是登录">
@@ -783,7 +809,7 @@ export async function accountView(view, notice = '') {
     return;
   }
   if (!isCurrent(pass, view)) return;
-  const active = data.memberships.filter((row) => row.state === 'active');
+  const membership = data.membership;
   view.innerHTML = `
     <div class="wrap stack" style="gap:20px">
       <div class="spread">
@@ -793,7 +819,7 @@ export async function accountView(view, notice = '') {
           <p class="tiny dim mono">${esc(data.user.email)}</p>
         </div>
         <span class="pill ${data.rank > 0 ? 'pill-good' : 'pill'}" id="account-rank">
-          ${data.rank > 0 ? `会员等级 ${esc(data.rank)}` : '未绑定激活码'}
+          ${data.rank > 0 ? `会员等级 ${esc(data.rank)}` : '普通用户'}
         </span>
       </div>
 
@@ -815,17 +841,9 @@ export async function accountView(view, notice = '') {
 
       <section class="panel">
         <div class="section-title"><h2>我的会员</h2></div>
-        ${active.length === 0 ? '<p class="dim">当前没有生效中的会员，所有视频只能看教学影像试看内容。</p>' : `
-          <div class="table-wrap"><table class="table">
-            <thead><tr><th>档位</th><th>等级</th><th>会员到期</th><th>来源</th><th>状态</th></tr></thead>
-            <tbody>${active.map((row) => `<tr>
-              <td>${esc(row.plan)}</td><td class="num">${esc(row.rank)}</td>
-              <td class="num">${row.expiresAt ? fmtDate(row.expiresAt) : '永久'}</td>
-              <td>${row.source === 'key' ? '激活码' : esc(row.source)}</td>
-              <td><span class="pill pill-good">${esc(row.state === 'active' ? '生效中' : row.state)}</span></td>
-            </tr>`).join('')}</tbody>
-          </table></div>`}
-        ${data.memberships.length > active.length ? `<p class="tiny dim" style="margin-top:10px">另有 ${data.memberships.length - active.length} 条已到期或已撤销的记录。</p>` : ''}
+        ${membership?.rank ? `<p><strong>${esc(membership.rank)} 级会员</strong> · ${membership.until ? fmtDate(membership.until) + ' 到期' : '永久有效'}</p>`
+          : `<p class="dim">${membership?.lapsedAt ? fmtDate(membership.lapsedAt) + ' 已到期' : '尚未开通会员'}</p>`}
+        <p class="tiny dim">多张有效卡合并为一份会员权益。续卡累加时长，按其中的最高等级观看。</p>
       </section>
 
       <section class="panel">
@@ -883,10 +901,7 @@ export async function accountView(view, notice = '') {
       state.boot = null;
       if (!isCurrent(pass, view)) return;
       const confirmation =
-        `<div class="note">已绑定 <strong>${esc(result.plan.name)}</strong>，会员等级 ${esc(result.rank)}。${result.until ? `到期时间 ${fmtDate(result.until)}。` : '永久有效。'}</div>`
-        + (result.overlap
-    ? '<div class="note note-warn" style="margin-top:8px">注意：这枚码的时长完全落在你已有的会员之内，<strong>到期时间没有变</strong>。要延长就再买一张同档位的码，要升级就买更高档位的。</div>'
-    : '');
+        `<div class="note">已绑定 <strong>${esc(result.plan.name)}</strong>，会员等级 ${esc(result.rank)}。${result.until ? `到期时间 ${fmtDate(result.until)}。` : '永久有效。'}</div>`;
       codeInput.value = '';
       resultBox.innerHTML = confirmation;
       try {

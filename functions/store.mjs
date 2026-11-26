@@ -5,6 +5,7 @@ import {
   planIsAuthentic, membershipIsAuthentic, videoAccessIsAuthentic, membershipSignature,
   planSignature, videoAccessSignature, normalizeSettings, settingsIsAuthentic, settingsSignature,
 } from './domain.mjs';
+import { signFields, verifyFields } from './shared/tokens.mjs';
 import { randomId, isoNow, isUuid } from './shared/util.mjs';
 
 export const COLUMNS = {
@@ -73,16 +74,18 @@ export function store(db, secret) {
     async setUserNote(id, patch) {
       return mutate(table('users').update(patch).eq('id', id), COLUMNS.users, 'user_write_failed');
     },
-    async listUsers({ offset, limit, emailExact, disabledOnly, activeOnly }) {
+    async listUsers({ offset, limit, emailExact, idExact, searchWord, disabledOnly, activeOnly }) {
       const page = rangeParams(offset, limit);
-      let query = table('users').select(COLUMNS.users);
-      // PostgREST filter strings are easy to break out of, so admin search only
-      // accepts a normalized exact email.
+      let query = table('users').select('id,email,display_name,created_at,last_login_at,disabled_at,contact_qq,note');
       if (emailExact) query = query.eq('email', emailExact);
-      // 回收站只要停用过的；主表反过来把它们整个排除，不再混在一栏里靠红 pill 区分。
+      if (idExact) query = query.eq('id', idExact);
+      if (searchWord && /^[\p{L}\p{N}@+ -]+$/u.test(searchWord)) {
+        query = query.or(['email', 'display_name', 'note', 'contact_qq'].map(field => `${field}.ilike.*${searchWord}*`).join(','));
+      }
       if (disabledOnly) query = query.not('disabled_at', 'is', null);
       if (activeOnly) query = query.is('disabled_at', null);
-      const rows = await many(query.order('created_at', { ascending: false }).range(page.first, page.last), 'users_read_failed');
+      const rows = await many(query.order('created_at', { ascending: false }).order('id', { ascending: false })
+        .range(page.first, page.last), 'users_read_failed');
       return paginate(rows, page);
     },
 
@@ -176,23 +179,31 @@ export function store(db, secret) {
     },
 
     // ---------------------------------------------------------- memberships
+    async membershipsForAccounts(ids) {
+      const byUser = new Map();
+      for (let i = 0; i < ids.length; i += 40) {
+        const batch = ids.slice(i, i + 40);
+        for (let first = 0; ; first += 200) {
+          const rows = await many(table('memberships').select(COLUMNS.memberships).in('user_id', batch)
+            .order('id', { ascending: true }).range(first, first + 199), 'memberships_read_failed');
+          for (const row of rows) {
+            const list = byUser.get(row.user_id) ?? [];
+            list.push({ ...row, verified: await membershipIsAuthentic(secret, row) });
+            byUser.set(row.user_id, list);
+          }
+          if (rows.length < 200) break;
+        }
+      }
+      return byUser;
+    },
     async listMemberships(userId) {
-      const rows = await many(
-        table('memberships').select(COLUMNS.memberships).eq('user_id', userId)
-          .order('expires_at', { ascending: false }).limit(100),
-        'memberships_read_failed',
-      );
-      const out = [];
-      for (const row of rows) out.push({ ...row, verified: await membershipIsAuthentic(secret, row) });
-      return out;
+      return (await this.membershipsForAccounts([userId])).get(userId) ?? [];
     },
     async insertMembership({ id, userId, planId, rank, source, keyId, expiresAt, startsAt }) {
-      const base = { user_id: userId, plan_id: planId, tier_rank: rank, expires_at: expiresAt, key_id: keyId };
-      const signature = await membershipSignature(secret, base);
-      return create(table('memberships'), {
-        id, user_id: userId, plan_id: planId, tier_rank: rank, source, key_id: keyId,
-        starts_at: startsAt, expires_at: expiresAt, created_at: isoNow(), revoked_at: null, signature,
-      }, COLUMNS.memberships, 'membership_write_failed');
+      const row = { id, user_id: userId, plan_id: planId, tier_rank: rank, source, key_id: keyId,
+        starts_at: startsAt, expires_at: expiresAt, created_at: isoNow(), revoked_at: null };
+      return create(table('memberships'), { ...row, signature: await membershipSignature(secret, row) },
+        COLUMNS.memberships, 'membership_write_failed');
     },
     async listMembersWithPlans(limit = 200, { includeRevoked = false } = {}) {
       let query = table('memberships').select(COLUMNS.memberships);
@@ -228,6 +239,14 @@ export function store(db, secret) {
     async revokeMembershipById(id) {
       return mutate(table('memberships').update({ revoked_at: isoNow() }).eq('id', id).is('revoked_at', null), COLUMNS.memberships, 'membership_revoke_failed');
     },
+    async editableMembership(id) {
+      const row = await this.findMembershipById(id);
+      if (!row) throw new DataError('membership_not_found');
+      if (!await membershipIsAuthentic(secret, row)) throw new DataError('entitlement_invalid');
+      const override = (await this.entitlementOverrides([row.user_id])).get(row.user_id);
+      if (override?.value.covered.includes(id)) throw new DataError('membership_settled');
+      return { row, override };
+    },
     async findMembershipById(id) {
       return one(table('memberships').select(COLUMNS.memberships).eq('id', id).maybeSingle(), 'membership_read_failed');
     },
@@ -241,13 +260,7 @@ export function store(db, secret) {
     async setMembershipExpiry({ id, expiresAt, expectedSignature }) {
       const row = await one(table('memberships').select(COLUMNS.memberships).eq('id', id).maybeSingle(), 'membership_read_failed');
       if (!row || row.revoked_at) return null;
-      const signature = await membershipSignature(secret, {
-        user_id: row.user_id,
-        plan_id: row.plan_id,
-        tier_rank: row.tier_rank,
-        expires_at: expiresAt,
-        key_id: row.key_id,
-      });
+      const signature = await membershipSignature(secret, { ...row, expires_at: expiresAt });
       return mutate(
         table('memberships').update({ expires_at: expiresAt, signature })
           .eq('id', id).eq('signature', expectedSignature ?? row.signature).is('revoked_at', null),
@@ -395,6 +408,48 @@ export function store(db, secret) {
     },
 
     // ------------------------------------------------------------- settings
+    async membershipEpoch() {
+      const key = 'membership-merge-v1';
+      const read = () => one(table('settings').select(COLUMNS.settings).eq('config_key', key).maybeSingle(), 'memberships_read_failed');
+      let row = await read();
+      if (!row) {
+        const at = isoNow();
+        try {
+          row = await create(table('settings'), { id: randomId(), config_key: key, value: { at }, updated_at: at,
+            signature: await signFields(secret, key, [at]) }, COLUMNS.settings, 'membership_write_failed');
+        } catch (error) {
+          if (error.detail !== '23505') throw error;
+          row = await read();
+        }
+      }
+      if (!row || !await verifyFields(secret, key, [row.value?.at], row.signature) || !Number.isFinite(Date.parse(row.value.at))) {
+        throw new DataError('entitlement_invalid');
+      }
+      return Date.parse(row.value.at);
+    },
+    async entitlementOverrides(ids) {
+      const overrides = new Map();
+      for (let index = 0; index < ids.length; index += 40) {
+        const keys = ids.slice(index, index + 40).map(id => 'member-balance/' + id);
+        const rows = await many(table('settings').select(COLUMNS.settings).in('config_key', keys).limit(keys.length), 'memberships_read_failed');
+        for (const row of rows) {
+          const v = row.value;
+          if (!v || !Array.isArray(v.covered) || !await verifyFields(secret, row.config_key, [v.at, v.rank, v.until, ...v.covered], row.signature)) {
+            throw new DataError('entitlement_invalid');
+          }
+          overrides.set(row.config_key.slice('member-balance/'.length), row);
+        }
+      }
+      return overrides;
+    },
+    async writeEntitlementOverride(userId, value, expected) {
+      const key = 'member-balance/' + userId;
+      const payload = { config_key: key, value, updated_at: value.at,
+        signature: await signFields(secret, key, [value.at, value.rank, value.until, ...value.covered]) };
+      if (expected) return mutate(table('settings').update(payload).eq('config_key', key).eq('signature', expected), COLUMNS.settings, 'membership_write_failed');
+      try { return await create(table('settings'), { id: randomId(), ...payload }, COLUMNS.settings, 'membership_write_failed'); }
+      catch (error) { if (error.detail === '23505') return null; throw error; }
+    },
     async readLessonSeries() {
       const row = await one(table('settings').select(COLUMNS.settings).eq('config_key', LESSON_SERIES_KEY).maybeSingle(), 'lesson_series_read_failed');
       if (!row) return { value:null, row:null };

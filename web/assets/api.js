@@ -104,15 +104,18 @@ const MESSAGES = {
   // 回收站那三颗"恢复"按钮各有自己的拒绝理由：混成一句"操作失败"，
   // 站长就分不清是已经恢复过了、还是这条本来就过期了不该放回名单。
   membership_not_revoked: '这条会员记录没有被撤销过，不用恢复。',
-  membership_already_expired: '这条权益本身已经过了到期时间，放回名单也只是多一行"已到期"。要给这位买家续，请在「会员名单」里给他重新出码或加减有效天数。',
+  membership_settled: '这张卡已计入管理员设置的会员余额。请在「用户管理」直接调整账号的等级和有效期。',
+  membership_already_expired: '恢复这张卡不会增加当前会员权益。如需续期，请在「用户管理」调整有效期。',
   membership_restore_failed: '恢复这条会员权益没写进去。先刷新看它是不是已经在名单里，再试一次；还是不行就记下时间找平台看日志。',
   key_already_redeemed: '这枚码已经被某个账号兑换过了，不能放回未兑换——放回去等于凭空多一枚。',
   key_not_restorable: '这枚码现在的状态不是"已作废"，所以没什么可放回的。刷新一下看它到底在哪一栏。',
   key_restore_failed: '把这枚码放回未兑换没写进去。先刷新确认它现在的状态，再试一次。',
   // 改天数是站长最常用的售后动作，四种失败各有各的原因，不能都推给"稍后重试"。
   member_days_invalid: '天数要填整数，正数是延长、负数是缩短，一次最多 ±3650 天。',
-  membership_permanent: '这条权益写着"永久"，没有到期日可以加减。要改成有期限，请撤销后重新发一枚对应档位的码。',
+  membership_permanent: '这条权益写着"永久"，没有到期日可以加减。可在用户卡片中选择「从现在起设置天数」或「指定到期时间」。',
   membership_revoked_locked: '这条已经撤销过了，改天数没有意义。要恢复权益请重新发一枚激活码。',
+  entitlement_invalid: '会员资料校验失败，请核查会员数据。',
+  membership_duration_invalid: '请选择有效期，并填写晚于现在的到期时间或正整数天数。',
   membership_conflict: '这条记录刚刚被别人改过了，这次没有写入。刷新名单后按最新的时间再改一次。',
   position_invalid: '观看进度数值无效。',
   body_invalid: '提交内容格式不正确。',
@@ -325,6 +328,7 @@ const UNCERTAIN = {
   'admin-plan-save': '档位可能已经保存了。刷新「档位设置」核对数字，再决定要不要重填。',
   'admin-plans-seed': '三个档位可能已经建好了。刷新「档位设置」核对，重复点不会产生第二套。',
   'admin-settings-save': '设置可能已经生效了。刷新页面看显示的是新值还是旧值，再决定重发哪一项。',
+  'admin-account-entitlement': '请重新读取该用户，核对等级和到期时间后再决定是否修改。',
   'admin-member-revoke': '这条会员记录可能已经撤销了。刷新名单核对，别连续点撤销。',
   'admin-user-disable': '这个账号可能已经停用了。刷新名单看它的状态标记。',
   'admin-user-enable': '这个账号可能已经恢复了。刷新名单看它的状态标记。',

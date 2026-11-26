@@ -2,7 +2,8 @@ import { createHumanCode, normalizeCode, formatCode, deriveUuid, isoNow, randomI
 import { fingerprint, shortId } from './shared/tokens.mjs';
 import { seal, open } from './shared/vault.mjs';
 import { DataError } from './db.mjs';
-import { effectiveRank, DEFAULT_PLANS } from './domain.mjs';
+import { CARD_SOURCE, DAY, entitlement } from './entitlement.mjs';
+import { DEFAULT_PLANS } from './domain.mjs';
 
 const KEY_LENGTH = 16;
 const MAX_BATCH = 1000;
@@ -18,8 +19,7 @@ export async function adjustMembershipDays(ctx, { id, days }) {
   if (!Number.isSafeInteger(amount) || amount === 0 || Math.abs(amount) > MAX_ADJUST_DAYS) {
     throw new DataError('member_days_invalid');
   }
-  const row = await ctx.store.findMembershipById(id);
-  if (!row) throw new DataError('membership_not_found');
+  const { row } = await ctx.store.editableMembership(id);
   if (row.revoked_at) throw new DataError('membership_revoked_locked');
   // 永久权益没有"到期"可以加减。把它改成一个具体日期是另一件事（撤了重发），
   // 静默把永久变成有期限会直接砍掉买家以为还有的东西。
@@ -27,7 +27,7 @@ export async function adjustMembershipDays(ctx, { id, days }) {
   const current = Date.parse(row.expires_at);
   if (!Number.isFinite(current)) throw new DataError('membership_permanent');
   // 已经过期的人加天数从现在起算；还没到期的人接着原来的时间往后加。
-  const from = Math.max(Date.now(), current);
+  const from = row.source === CARD_SOURCE ? current : Math.max(Date.now(), current);
   const expiresAt = new Date(from + amount * DAY_MS).toISOString();
   const updated = await ctx.store.setMembershipExpiry({ id, expiresAt, expectedSignature: row.signature });
   if (!updated) throw new DataError('membership_conflict');
@@ -206,38 +206,25 @@ export async function redeemCode(ctx, { code }) {
     await ctx.store.audit({ actorId: userId, action: 'redeem_fail', target: 'unknown', ipPrefix: ctx.ip });
     throw new DataError('code_invalid');
   }
-  if (key.status === 'redeemed') throw new DataError('code_used');
+  const membershipId = await deriveUuid('membership', key.id);
+  const recovering = key.status === 'redeemed' && key.redeemed_user_id === userId;
+  if (key.status === 'redeemed' && (!recovering || await ctx.store.findMembershipById(membershipId))) throw new DataError('code_used');
   if (key.status === 'revoked') throw new DataError('code_revoked');
-  // 冻起来的码和作废的码要说得不一样：前者是"账号停用中，恢复账号就能兑"，
-  // 后者是"这枚码没有了"。混成一句话，买家会以为站长吞了他的码。
   if (key.status === 'frozen') throw new DataError('code_frozen');
-  if (key.status !== 'unused') throw new DataError('code_unavailable');
+  if (!recovering && key.status !== 'unused') throw new DataError('code_unavailable');
   const shelfEnd = readExpiry(key.expires_at);
-  if (shelfEnd !== null && shelfEnd <= Date.now()) throw new DataError('code_expired');
-  if (key.redeemed_user_id === userId) throw new DataError('code_used');
-
+  if (!recovering && shelfEnd !== null && shelfEnd <= Date.now()) throw new DataError('code_expired');
   const plan = await ctx.store.findPlanById(key.plan_id);
   if (!plan || !plan.authentic) throw new DataError('plan_unavailable');
-
-  const membershipId = await deriveUuid('membership', key.id);
-  const existing = await ctx.store.listMemberships(userId);
-  const now = Date.now();
-  const samePlan = existing.find((row) => row.verified && row.plan_id === plan.id && !row.revoked_at);
-  const previousEnd = samePlan ? readExpiry(samePlan.expires_at) : undefined;
-  const days = Number(plan.duration_days);
-  let expiresAt = null;
-  if (days > 0 && !(samePlan && previousEnd === null)) {
-    // Same-plan renewals stack onto the time that is still owed, never onto now.
-    expiresAt = new Date(Math.max(now, previousEnd ?? now) + days * 86400000).toISOString();
-  }
-
-  const fenced = await ctx.store.redeemKey({ id: key.id, userId, at: isoNow() });
+  const fenced = recovering ? key : await ctx.store.redeemKey({ id: key.id, userId, at: isoNow() });
   if (!fenced) throw new DataError('code_used');
+  const startsAt = fenced.redeemed_at;
+  const expiresAt = plan.duration_days > 0 ? new Date(Date.parse(startsAt) + Number(plan.duration_days) * DAY).toISOString() : null;
 
   try {
     await ctx.store.insertMembership({
-      id: membershipId, userId, planId: plan.id, rank: plan.tier_rank, source: 'key',
-      keyId: key.id, startsAt: fenced.redeemed_at ?? isoNow(0), expiresAt,
+      id: membershipId, userId, planId: plan.id, rank: plan.tier_rank, source: CARD_SOURCE,
+      keyId: key.id, startsAt, expiresAt,
     });
   } catch (error) {
     if (error?.code === 'membership_write_failed') {
@@ -252,23 +239,11 @@ export async function redeemCode(ctx, { code }) {
   }
 
   await ctx.store.audit({ actorId: userId, action: 'redeem', target: key.id, ipPrefix: ctx.ip, detail: { plan: plan.code } });
-  const memberships = await ctx.store.listMemberships(userId);
-  const before = effectiveRank(existing, now);
-  const standing = effectiveRank(memberships, now);
-  // A cheaper code bought while a better membership is still running buys nothing: the
-  // buyer's own expiry does not move. Saying it at the moment of redemption is the
-  // difference between "我买了月卡怎么没延长" and a refund argument a week later.
-  const rankRose = standing.rank > before.rank;
-  const timeExtended = before.until === null
-    ? false
-    : (standing.until === null || Date.parse(standing.until) > Date.parse(before.until));
+  const [memberships, overrides] = await Promise.all([ctx.store.listMemberships(userId), ctx.store.entitlementOverrides([userId])]);
+  const standing = entitlement(memberships, ctx.mergeEpoch, overrides.get(userId));
   return {
-    ok: true,
-    plan: { code: plan.code, name: plan.name, rank: plan.tier_rank },
-    membership: { id: membershipId, expiresAt },
-    rank: standing.rank,
-    until: standing.until,
-    overlap: !rankRose && !timeExtended,
+    ok: true, plan: { code: plan.code, name: plan.name, rank: plan.tier_rank },
+    membership: { id: membershipId, expiresAt: standing.until }, rank: standing.rank, until: standing.until, overlap: false,
   };
 }
 

@@ -197,6 +197,7 @@ export function mountAdminWorkspace(view) {
     if (!node || forms.has(node) || node.closest('.admin-form-disclosure') || node.closest(EXCLUDED)) return;
     forms.add(node);
     const details = element('details', 'admin-form-disclosure');
+    details.open = node.hasAttribute('data-prefilled');
     details.append(element('summary', '', title));
     node.before(details);
     details.append(node);
